@@ -22,6 +22,7 @@ from discord.ext import commands as discord_commands
 from google import genai
 from telethon import TelegramClient
 from telethon.sessions import StringSession
+from telethon.tl.functions.messages import RequestWebViewRequest
 
 load_dotenv()
 
@@ -35,7 +36,6 @@ ALLOWED_USERS = [x.strip() for x in ALLOWED_USERS_RAW.split(",") if x.strip()]
 TELEGRAM_API_ID = int(os.getenv("TELEGRAM_API_ID", "1234567"))
 TELEGRAM_API_HASH = os.getenv("TELEGRAM_API_HASH", "f72565d820fde421d56172f2261dadd4")
 
-# Supports multiple bots separated by commas (e.g. "@BotOne, @BotTwo")
 MINING_BOTS_RAW = os.getenv("MINING_BOT_USERNAME", "@YourTargetMiningBot")
 MINING_BOT_USERNAMES = [b.strip() for b in MINING_BOTS_RAW.split(",") if b.strip()]
 
@@ -162,9 +162,9 @@ async def check_price_alerts_loop(tg_app, discord_bot):
             if t in ACTIVE_ALERTS:
                 ACTIVE_ALERTS.remove(t)
 
-# --- MULTI-BOT TELETHON MINING WORKER LOOP (Mini App Support) ---
+# --- ADVANCED MINI APP WEBVIEW AUTO-CLAIMER ---
 async def auto_claimer_loop(telethon_client, account_label="Account-1"):
-    print(f"[+] Telethon Multi-Bot Mining Auto-Claimer started for [{account_label}] targeting: {MINING_BOT_USERNAMES}")
+    print(f"[+] Telethon Mini-App Auto-Claimer started for [{account_label}] targeting: {MINING_BOT_USERNAMES}")
     await asyncio.sleep(10)
     while True:
         for bot_username in MINING_BOT_USERNAMES:
@@ -184,33 +184,40 @@ async def auto_claimer_loop(telethon_client, account_label="Account-1"):
                     
                     should_claim = any(keyword in message_text for keyword in CLAIM_KEYWORDS)
                     if should_claim:
-                        print(f"[+] [{account_label}] [{bot_username}] Keyword matched! Attempting claim...")
-                        clicked = False
+                        print(f"[+] [{account_label}] [{bot_username}] Storage full detected! Launching WebApp session...")
+                        claimed = False
                         
                         if latest_msg.reply_markup and hasattr(latest_msg.reply_markup, 'rows'):
                             try:
-                                for r_idx, row in enumerate(latest_msg.reply_markup.rows):
-                                    for b_idx, button in enumerate(row.buttons):
-                                        btn_text = button.text.lower()
-                                        print(f"[*] [{account_label}] Found button: '{button.text}'")
-                                        if any(k in btn_text for k in ["claim", "harvest", "collect", "start", "reward"]):
-                                            # Check if it's a normal callback button or webapp
-                                            try:
-                                                await latest_msg.click(r_idx, b_idx)
-                                                print(f"[+] [{account_label}] [{bot_username}] Clicked button '{button.text}' successfully!")
-                                                clicked = True
-                                                break
-                                            except Exception as web_err:
-                                                print(f"[-] [{account_label}] Web app button click restricted, sending text fallback: {web_err}")
-                                    if clicked:
+                                for row in latest_msg.reply_markup.rows:
+                                    for button in row.buttons:
+                                        # Check if button is a WebApp button
+                                        if hasattr(button, 'url') and button.url:
+                                            btn_text = button.text.lower()
+                                            if any(k in btn_text for k in ["claim", "harvest", "collect", "reward"]):
+                                                print(f"[+] [{account_label}] Opening WebApp URL for button: {button.text}")
+                                                # Fetch and trigger the WebApp container session via Telethon MTProto
+                                                webview = await telethon_client(RequestWebViewRequest(
+                                                    peer=bot_entity,
+                                                    bot=bot_entity,
+                                                    platform='android',
+                                                    url=button.url
+                                                ))
+                                                # Hit the webview url via requests to simulate a ping/claim execution
+                                                if webview and hasattr(webview, 'url'):
+                                                    requests.get(webview.url, timeout=10)
+                                                    print(f"[+] [{account_label}] Successfully triggered WebApp claim URL!")
+                                                    claimed = True
+                                                    break
+                                    if claimed:
                                         break
-                            except Exception as btn_err:
-                                print(f"[-] [{account_label}] Button iteration error: {btn_err}")
+                            except Exception as web_err:
+                                print(f"[-] [{account_label}] WebApp invocation error: {web_err}")
                         
-                        # Fallback: Send text command /claim or /start if direct button click wasn't possible
-                        if not clicked:
+                        # Fallback text commands if WebApp trigger fails
+                        if not claimed:
                             await telethon_client.send_message(bot_entity, "/claim")
-                            print(f"[+] [{account_label}] [{bot_username}] Sent text fallback command: /claim")
+                            print(f"[+] [{account_label}] Sent text fallback command: /claim")
                         break
                 
                 await asyncio.sleep(10)
@@ -378,7 +385,7 @@ async def main():
     asyncio.create_task(auto_claimer_loop(telethon_client_two, "Account-2"))
     # ----------------------------------------
 
-    print("[+] Master Cloud Bot + Dual Telegram Auto-Claimers active 24/7.")
+    print("[+] Master Cloud Bot + Dual Telegram WebApp Auto-Claimers active 24/7.")
     try:
         await discord_bot.start(DISCORD_TOKEN)
     finally:
