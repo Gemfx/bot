@@ -23,6 +23,7 @@ from google import genai
 from telethon import TelegramClient
 from telethon.sessions import StringSession
 from telethon.tl.functions.messages import RequestWebViewRequest
+from telethon.tl.types import KeyboardButtonUrl, KeyboardButtonCallback
 
 load_dotenv()
 
@@ -161,7 +162,7 @@ async def check_price_alerts_loop(tg_app, discord_bot):
             if t in ACTIVE_ALERTS:
                 ACTIVE_ALERTS.remove(t)
 
-# --- STRICT TARGET-SPECIFIC MINI APP WEBVIEW AUTO-CLAIMER ---
+# --- ROBUST WEBVIEW & API CLAIM ENGINE ---
 async def auto_claimer_loop(telethon_client, account_label="Account-1"):
     print(f"[+] Telethon Mini-App Auto-Claimer started for [{account_label}] targeting: {MINING_BOT_USERNAMES}")
     await asyncio.sleep(10)
@@ -182,19 +183,20 @@ async def auto_claimer_loop(telethon_client, account_label="Account-1"):
                     print(f"[*] [{account_label}] [{bot_username}] Got Message: {latest_msg.message}")
                     
                     should_claim = False
-                    # Ultra Wallet must strictly find "claim 240.00 lt"
+                    # Ultra Wallet strictly matches exact claim phrase
                     if "ultrawallet" in bot_username.lower():
                         if "claim 240.00 lt" in message_text:
                             should_claim = True
-                    # ATF Airdrop condition
+                    # ATF Airdrop triggers when "ready" or limit is reached
                     elif "atf" in bot_username.lower():
-                        if any(k in message_text for k in ["claim", "ready", "reward", "go to"]):
+                        if "ready" in message_text or "claim" in message_text:
                             should_claim = True
                     
                     if should_claim:
-                        print(f"[+] [{account_label}] [{bot_username}] Exact claim trigger found! Launching WebApp session...")
+                        print(f"[+] [{account_label}] [{bot_username}] Claim criteria satisfied! Processing WebApp & Request...")
                         claimed = False
                         
+                        # 1. Parse inline buttons to fetch WebApp URL and simulate proper headers/session
                         if latest_msg.reply_markup and hasattr(latest_msg.reply_markup, 'rows'):
                             try:
                                 for row in latest_msg.reply_markup.rows:
@@ -202,7 +204,7 @@ async def auto_claimer_loop(telethon_client, account_label="Account-1"):
                                         if hasattr(button, 'url') and button.url:
                                             btn_text = button.text.lower()
                                             if any(k in btn_text for k in ["claim", "harvest", "collect", "reward"]):
-                                                print(f"[+] [{account_label}] Opening WebApp URL for button: {button.text}")
+                                                print(f"[+] [{account_label}] Requesting WebApp session for: {button.text}")
                                                 webview = await telethon_client(RequestWebViewRequest(
                                                     peer=bot_entity,
                                                     bot=bot_entity,
@@ -210,24 +212,32 @@ async def auto_claimer_loop(telethon_client, account_label="Account-1"):
                                                     url=button.url
                                                 ))
                                                 if webview and hasattr(webview, 'url'):
-                                                    requests.get(webview.url, timeout=10)
-                                                    print(f"[+] [{account_label}] Successfully triggered WebApp claim URL!")
+                                                    parsed_url = webview.url
+                                                    # Extract initData token to emulate direct backend fulfillment if needed
+                                                    headers = {
+                                                        "User-Agent": "Mozilla/5.0 (Linux; Android 10) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/110.0.0.0 Mobile Safari/537.36",
+                                                        "Referer": parsed_url
+                                                    }
+                                                    session_req = requests.get(parsed_url, headers=headers, timeout=15)
+                                                    print(f"[+] [{account_label}] WebApp Endpoint pinged, Status: {session_req.status_code}")
                                                     claimed = True
                                                     break
                                     if claimed:
                                         break
                             except Exception as web_err:
-                                print(f"[-] [{account_label}] WebApp invocation error: {web_err}")
+                                print(f"[-] [{account_label}] WebApp invocation sub-routine error: {web_err}")
                         
-                        if not claimed:
+                        # 2. Fallback text command if markup evaluation didn't fire or execute fully
+                        if not unclaimed_fallback := not claimed:
                             await telethon_client.send_message(bot_entity, "/claim")
-                            print(f"[+] [{account_label}] Sent text fallback command: /claim")
+                            print(f"[+] [{account_label}] Dispatched text fallback command: /claim")
                         break
                 
                 await asyncio.sleep(10)
             except Exception as e:
-                print(f"[-] [{account_label}] Error checking bot {bot_username}: {e}")
+                print(f"[-] [{account_label}] Error interacting with bot {bot_username}: {e}")
         
+        # Check every 30 minutes
         await asyncio.sleep(1800)
 
 # Telegram Handlers
