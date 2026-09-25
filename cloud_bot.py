@@ -36,7 +36,7 @@ ALLOWED_USERS = [x.strip() for x in ALLOWED_USERS_RAW.split(",") if x.strip()]
 TELEGRAM_API_ID = int(os.getenv("TELEGRAM_API_ID", "1234567"))
 TELEGRAM_API_HASH = os.getenv("TELEGRAM_API_HASH", "f72565d820fde421d56172f2261dadd4")
 
-MINING_BOTS_RAW = os.getenv("MINING_BOT_USERNAME", "@YourTargetMiningBot")
+MINING_BOTS_RAW = os.getenv("MINING_BOT_USERNAME", "@UltrawalletTrade_Bot,@ATF_AIRDROP_bot")
 MINING_BOT_USERNAMES = [b.strip() for b in MINING_BOTS_RAW.split(",") if b.strip()]
 
 STATUS_COMMAND = "/balance"
@@ -191,19 +191,16 @@ async def auto_claimer_loop(telethon_client, account_label="Account-1"):
                             try:
                                 for row in latest_msg.reply_markup.rows:
                                     for button in row.buttons:
-                                        # Check if button is a WebApp button
                                         if hasattr(button, 'url') and button.url:
                                             btn_text = button.text.lower()
                                             if any(k in btn_text for k in ["claim", "harvest", "collect", "reward"]):
                                                 print(f"[+] [{account_label}] Opening WebApp URL for button: {button.text}")
-                                                # Fetch and trigger the WebApp container session via Telethon MTProto
                                                 webview = await telethon_client(RequestWebViewRequest(
                                                     peer=bot_entity,
                                                     bot=bot_entity,
                                                     platform='android',
                                                     url=button.url
                                                 ))
-                                                # Hit the webview url via requests to simulate a ping/claim execution
                                                 if webview and hasattr(webview, 'url'):
                                                     requests.get(webview.url, timeout=10)
                                                     print(f"[+] [{account_label}] Successfully triggered WebApp claim URL!")
@@ -214,7 +211,6 @@ async def auto_claimer_loop(telethon_client, account_label="Account-1"):
                             except Exception as web_err:
                                 print(f"[-] [{account_label}] WebApp invocation error: {web_err}")
                         
-                        # Fallback text commands if WebApp trigger fails
                         if not claimed:
                             await telethon_client.send_message(bot_entity, "/claim")
                             print(f"[+] [{account_label}] Sent text fallback command: /claim")
