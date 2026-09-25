@@ -76,7 +76,7 @@ def generate_ai_response(prompt: str) -> str:
             return "Error: GEMINI_API_KEY is missing."
         client = genai.Client(api_key=GEMINI_API_KEY)
         response = client.models.generate_content(
-            model="gemini-3.6-flash",
+            model="gemini-3.8-flash",
             contents=prompt,
         )
         return response.text
@@ -161,7 +161,7 @@ async def check_price_alerts_loop(tg_app, discord_bot):
             if t in ACTIVE_ALERTS:
                 ACTIVE_ALERTS.remove(t)
 
-# --- TARGET-SPECIFIC MINI APP WEBVIEW AUTO-CLAIMER ---
+# --- STRICT TARGET-SPECIFIC MINI APP WEBVIEW AUTO-CLAIMER ---
 async def auto_claimer_loop(telethon_client, account_label="Account-1"):
     print(f"[+] Telethon Mini-App Auto-Claimer started for [{account_label}] targeting: {MINING_BOT_USERNAMES}")
     await asyncio.sleep(10)
@@ -181,15 +181,18 @@ async def auto_claimer_loop(telethon_client, account_label="Account-1"):
                     message_text = latest_msg.message.lower()
                     print(f"[*] [{account_label}] [{bot_username}] Got Message: {latest_msg.message}")
                     
-                    # Specific conditional filters for Ultra Wallet vs ATF Airdrop
                     should_claim = False
-                    if "ultrawallet" in bot_username.lower() and ("240" in message_text or "lt" in message_text):
-                        should_claim = True
-                    elif "atf" in bot_username.lower() and ("claim" in message_text or "ready" in message_text):
-                        should_claim = True
+                    # Ultra Wallet must strictly find "claim 240.00 lt"
+                    if "ultrawallet" in bot_username.lower():
+                        if "claim 240.00 lt" in message_text:
+                            should_claim = True
+                    # ATF Airdrop condition
+                    elif "atf" in bot_username.lower():
+                        if any(k in message_text for k in ["claim", "ready", "reward", "go to"]):
+                            should_claim = True
                     
                     if should_claim:
-                        print(f"[+] [{account_label}] [{bot_username}] Target claim state detected! Launching WebApp session...")
+                        print(f"[+] [{account_label}] [{bot_username}] Exact claim trigger found! Launching WebApp session...")
                         claimed = False
                         
                         if latest_msg.reply_markup and hasattr(latest_msg.reply_markup, 'rows'):
