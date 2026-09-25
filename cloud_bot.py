@@ -161,14 +161,14 @@ async def check_price_alerts_loop(tg_app, discord_bot):
             if t in ACTIVE_ALERTS:
                 ACTIVE_ALERTS.remove(t)
 
-# --- MULTI-BOT TELETHON MINING WORKER LOOP ---
-async def auto_claimer_loop(telethon_client):
-    print(f"[+] Telethon Multi-Bot Mining Auto-Claimer started for: {MINING_BOT_USERNAMES}")
+# --- MULTI-BOT TELETHON MINING WORKER LOOP (Updated for dual accounts) ---
+async def auto_claimer_loop(telethon_client, account_label="Account-1"):
+    print(f"[+] Telethon Multi-Bot Mining Auto-Claimer started for [{account_label}] targeting: {MINING_BOT_USERNAMES}")
     await asyncio.sleep(10)
     while True:
         for bot_username in MINING_BOT_USERNAMES:
             try:
-                print(f"[*] Checking status for mining bot: {bot_username}")
+                print(f"[*] [{account_label}] Checking status for mining bot: {bot_username}")
                 bot_entity = await telethon_client.get_entity(bot_username)
                 await telethon_client.send_message(bot_entity, STATUS_COMMAND)
                 
@@ -177,25 +177,25 @@ async def auto_claimer_loop(telethon_client):
                 if messages:
                     latest_msg = messages[0]
                     message_text = latest_msg.message.lower()
-                    print(f"[*] [{bot_username}] Status: {latest_msg.message}")
+                    print(f"[*] [{account_label}] [{bot_username}] Status: {latest_msg.message}")
                     
                     should_claim = any(keyword in message_text for keyword in CLAIM_KEYWORDS)
                     if should_claim:
-                        print(f"[+] [{bot_username}] Storage full/ready! Claiming...")
+                        print(f"[+] [{account_label}] [{bot_username}] Storage full/ready! Claiming...")
                         if latest_msg.reply_markup:
                             try:
                                 await latest_msg.click(0, 0)
-                                print(f"[+] [{bot_username}] Clicked claim inline button successfully!")
+                                print(f"[+] [{account_label}] [{bot_username}] Clicked claim inline button successfully!")
                             except Exception as btn_err:
-                                print(f"[-] [{bot_username}] Failed to click inline button: {btn_err}")
+                                print(f"[-] [{account_label}] [{bot_username}] Failed to click inline button: {btn_err}")
                         else:
                             await telethon_client.send_message(bot_entity, "/claim")
-                            print(f"[+] [{bot_username}] Sent text claim command.")
+                            print(f"[+] [{account_label}] [{bot_username}] Sent text claim command.")
                 
                 await asyncio.sleep(10)
             except Exception as e:
-                print(f"[-] Error checking bot {bot_username}: {e}")
-            
+                print(f"[-] [{account_label}] Error checking bot {bot_username}: {e}")
+        
         await asyncio.sleep(1800)
 
 # Telegram Handlers
@@ -344,16 +344,23 @@ async def main():
     
     asyncio.create_task(check_price_alerts_loop(tg_app, discord_bot))
 
-    # Initialize Telethon Client using your local generated session file
-    telethon_client = TelegramClient('mining_session', TELEGRAM_API_ID, TELEGRAM_API_HASH)
-    await telethon_client.start()
-    asyncio.create_task(auto_claimer_loop(telethon_client))
+    # --- INITIALIZE BOTH TELETHON CLIENTS ---
+    telethon_client_one = TelegramClient('mining_session', TELEGRAM_API_ID, TELEGRAM_API_HASH)
+    telethon_client_two = TelegramClient('second_account', TELEGRAM_API_ID, TELEGRAM_API_HASH)
+    
+    await telethon_client_one.start()
+    await telethon_client_two.start()
+    
+    asyncio.create_task(auto_claimer_loop(telethon_client_one, "Account-1"))
+    asyncio.create_task(auto_claimer_loop(telethon_client_two, "Account-2"))
+    # ----------------------------------------
 
-    print("[+] Master Cloud Bot + Multi-Bot Auto-Claimer active 24/7.")
+    print("[+] Master Cloud Bot + Dual Telegram Auto-Claimers active 24/7.")
     try:
         await discord_bot.start(DISCORD_TOKEN)
     finally:
-        await telethon_client.disconnect()
+        await telethon_client_one.disconnect()
+        await telethon_client_two.disconnect()
         await tg_app.updater.stop()
         await tg_app.stop()
         await tg_app.shutdown()
