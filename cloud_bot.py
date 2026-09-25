@@ -40,7 +40,7 @@ MINING_BOTS_RAW = os.getenv("MINING_BOT_USERNAME", "@YourTargetMiningBot")
 MINING_BOT_USERNAMES = [b.strip() for b in MINING_BOTS_RAW.split(",") if b.strip()]
 
 STATUS_COMMAND = "/balance"
-CLAIM_KEYWORDS = ["full", "ready", "storage full", "available", "harvest", "collect"]
+CLAIM_KEYWORDS = ["full", "ready", "storage full", "available", "harvest", "collect", "cycle is complete"]
 # --------------------------------------
 
 ACTIVE_ALERTS = []
@@ -162,7 +162,7 @@ async def check_price_alerts_loop(tg_app, discord_bot):
             if t in ACTIVE_ALERTS:
                 ACTIVE_ALERTS.remove(t)
 
-# --- MULTI-BOT TELETHON MINING WORKER LOOP (Smart Button Finder) ---
+# --- MULTI-BOT TELETHON MINING WORKER LOOP (Mini App Support) ---
 async def auto_claimer_loop(telethon_client, account_label="Account-1"):
     print(f"[+] Telethon Multi-Bot Mining Auto-Claimer started for [{account_label}] targeting: {MINING_BOT_USERNAMES}")
     await asyncio.sleep(10)
@@ -184,32 +184,34 @@ async def auto_claimer_loop(telethon_client, account_label="Account-1"):
                     
                     should_claim = any(keyword in message_text for keyword in CLAIM_KEYWORDS)
                     if should_claim:
-                        print(f"[+] [{account_label}] [{bot_username}] Keyword matched! Claiming...")
+                        print(f"[+] [{account_label}] [{bot_username}] Keyword matched! Attempting claim...")
                         clicked = False
+                        
                         if latest_msg.reply_markup and hasattr(latest_msg.reply_markup, 'rows'):
                             try:
-                                # Search for a button text matching claim actions
                                 for r_idx, row in enumerate(latest_msg.reply_markup.rows):
                                     for b_idx, button in enumerate(row.buttons):
                                         btn_text = button.text.lower()
+                                        print(f"[*] [{account_label}] Found button: '{button.text}'")
                                         if any(k in btn_text for k in ["claim", "harvest", "collect", "start", "reward"]):
-                                            await latest_msg.click(r_idx, b_idx)
-                                            print(f"[+] [{account_label}] [{bot_username}] Clicked button '{button.text}' at row {r_idx}, col {b_idx}!")
-                                            clicked = True
-                                            break
+                                            # Check if it's a normal callback button or webapp
+                                            try:
+                                                await latest_msg.click(r_idx, b_idx)
+                                                print(f"[+] [{account_label}] [{bot_username}] Clicked button '{button.text}' successfully!")
+                                                clicked = True
+                                                break
+                                            except Exception as web_err:
+                                                print(f"[-] [{account_label}] Web app button click restricted, sending text fallback: {web_err}")
                                     if clicked:
                                         break
-                                # Fallback to first button if no keyword match found in buttons
-                                if not clicked:
-                                    await latest_msg.click(0, 0)
-                                    print(f"[+] [{account_label}] [{bot_username}] Clicked default button (0, 0).")
-                                break
                             except Exception as btn_err:
-                                print(f"[-] [{account_label}] [{bot_username}] Failed to click inline button: {btn_err}")
-                        else:
+                                print(f"[-] [{account_label}] Button iteration error: {btn_err}")
+                        
+                        # Fallback: Send text command /claim or /start if direct button click wasn't possible
+                        if not clicked:
                             await telethon_client.send_message(bot_entity, "/claim")
-                            print(f"[+] [{account_label}] [{bot_username}] Sent text claim command.")
-                            break
+                            print(f"[+] [{account_label}] [{bot_username}] Sent text fallback command: /claim")
+                        break
                 
                 await asyncio.sleep(10)
             except Exception as e:
