@@ -1,4 +1,4 @@
-﻿import os
+import os
 import time
 import asyncio
 from datetime import timedelta
@@ -40,7 +40,7 @@ MINING_BOTS_RAW = os.getenv("MINING_BOT_USERNAME", "@YourTargetMiningBot")
 MINING_BOT_USERNAMES = [b.strip() for b in MINING_BOTS_RAW.split(",") if b.strip()]
 
 STATUS_COMMAND = "/balance"
-CLAIM_KEYWORDS = ["full", "ready", "claim", "storage full", "available"]
+CLAIM_KEYWORDS = ["full", "ready", "claim", "storage full", "available", "balance", "harvest", "collect"]
 # --------------------------------------
 
 ACTIVE_ALERTS = []
@@ -162,7 +162,7 @@ async def check_price_alerts_loop(tg_app, discord_bot):
             if t in ACTIVE_ALERTS:
                 ACTIVE_ALERTS.remove(t)
 
-# --- MULTI-BOT TELETHON MINING WORKER LOOP (Updated for dual accounts) ---
+# --- MULTI-BOT TELETHON MINING WORKER LOOP (Enhanced Logging & Multi-Message Check) ---
 async def auto_claimer_loop(telethon_client, account_label="Account-1"):
     print(f"[+] Telethon Multi-Bot Mining Auto-Claimer started for [{account_label}] targeting: {MINING_BOT_USERNAMES}")
     await asyncio.sleep(10)
@@ -173,25 +173,29 @@ async def auto_claimer_loop(telethon_client, account_label="Account-1"):
                 bot_entity = await telethon_client.get_entity(bot_username)
                 await telethon_client.send_message(bot_entity, STATUS_COMMAND)
                 
-                await asyncio.sleep(5)
-                messages = await telethon_client.get_messages(bot_entity, limit=1)
-                if messages:
-                    latest_msg = messages[0]
+                await asyncio.sleep(6)
+                messages = await telethon_client.get_messages(bot_entity, limit=3)
+                
+                for latest_msg in messages:
+                    if not latest_msg.message:
+                        continue
                     message_text = latest_msg.message.lower()
-                    print(f"[*] [{account_label}] [{bot_username}] Status: {latest_msg.message}")
+                    print(f"[*] [{account_label}] [{bot_username}] Got Message: {latest_msg.message}")
                     
                     should_claim = any(keyword in message_text for keyword in CLAIM_KEYWORDS)
                     if should_claim:
-                        print(f"[+] [{account_label}] [{bot_username}] Storage full/ready! Claiming...")
+                        print(f"[+] [{account_label}] [{bot_username}] Keyword matched! Claiming...")
                         if latest_msg.reply_markup:
                             try:
                                 await latest_msg.click(0, 0)
                                 print(f"[+] [{account_label}] [{bot_username}] Clicked claim inline button successfully!")
+                                break
                             except Exception as btn_err:
                                 print(f"[-] [{account_label}] [{bot_username}] Failed to click inline button: {btn_err}")
                         else:
                             await telethon_client.send_message(bot_entity, "/claim")
                             print(f"[+] [{account_label}] [{bot_username}] Sent text claim command.")
+                            break
                 
                 await asyncio.sleep(10)
             except Exception as e:
@@ -348,7 +352,6 @@ async def main():
     # --- INITIALIZE BOTH TELETHON CLIENTS ---
     telethon_client_one = TelegramClient('mining_session', TELEGRAM_API_ID, TELEGRAM_API_HASH)
     
-    # Second account reads session string securely from environment variables
     second_session_string = os.getenv("SECOND_SESSION_STRING", "")
     telethon_client_two = TelegramClient(StringSession(second_session_string), TELEGRAM_API_ID, TELEGRAM_API_HASH)
     
