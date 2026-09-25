@@ -22,7 +22,6 @@ from discord.ext import commands as discord_commands
 from google import genai
 from telethon import TelegramClient
 from telethon.sessions import StringSession
-from telethon.tl.functions.messages import RequestWebViewRequest
 
 load_dotenv()
 
@@ -161,9 +160,9 @@ async def check_price_alerts_loop(tg_app, discord_bot):
             if t in ACTIVE_ALERTS:
                 ACTIVE_ALERTS.remove(t)
 
-# --- ROBUST WEBVIEW & API CLAIM ENGINE ---
+# --- HIGH-PRIORITY PUSH NOTIFICATION RADAR ---
 async def auto_claimer_loop(telethon_client, account_label="Account-1"):
-    print(f"[+] Telethon Mini-App Auto-Claimer started for [{account_label}] targeting: {MINING_BOT_USERNAMES}")
+    print(f"[+] Telethon Push Notification Radar started for [{account_label}] targeting: {MINING_BOT_USERNAMES}")
     await asyncio.sleep(10)
     while True:
         for bot_username in MINING_BOT_USERNAMES:
@@ -182,53 +181,26 @@ async def auto_claimer_loop(telethon_client, account_label="Account-1"):
                     print(f"[*] [{account_label}] [{bot_username}] Got Message: {latest_msg.message}")
                     
                     should_claim = False
-                    # Ultra Wallet strictly matches exact claim phrase
                     if "ultrawallet" in bot_username.lower():
                         if "claim 240.00 lt" in message_text:
                             should_claim = True
-                    # ATF Airdrop triggers when "ready" or limit is reached
                     elif "atf" in bot_username.lower():
                         if "ready" in message_text or "claim" in message_text:
                             should_claim = True
                     
                     if should_claim:
-                        print(f"[+] [{account_label}] [{bot_username}] Claim criteria satisfied! Processing WebApp & Request...")
-                        claimed = False
-                        
-                        # 1. Parse inline buttons to fetch WebApp URL and simulate proper headers/session
-                        if latest_msg.reply_markup and hasattr(latest_msg.reply_markup, 'rows'):
-                            try:
-                                for row in latest_msg.reply_markup.rows:
-                                    for button in row.buttons:
-                                        if hasattr(button, 'url') and button.url:
-                                            btn_text = button.text.lower()
-                                            if any(k in btn_text for k in ["claim", "harvest", "collect", "reward"]):
-                                                print(f"[+] [{account_label}] Requesting WebApp session for: {button.text}")
-                                                webview = await telethon_client(RequestWebViewRequest(
-                                                    peer=bot_entity,
-                                                    bot=bot_entity,
-                                                    platform='android',
-                                                    url=button.url
-                                                ))
-                                                if webview and hasattr(webview, 'url'):
-                                                    parsed_url = webview.url
-                                                    headers = {
-                                                        "User-Agent": "Mozilla/5.0 (Linux; Android 10) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/110.0.0.0 Mobile Safari/537.36",
-                                                        "Referer": parsed_url
-                                                    }
-                                                    session_req = requests.get(parsed_url, headers=headers, timeout=15)
-                                                    print(f"[+] [{account_label}] WebApp Endpoint pinged, Status: {session_req.status_code}")
-                                                    claimed = True
-                                                    break
-                                    if claimed:
-                                        break
-                            except Exception as web_err:
-                                print(f"[-] [{account_label}] WebApp invocation sub-routine error: {web_err}")
-                        
-                        # 2. Fallback text command if markup evaluation didn't execute fully
-                        if not claimed:
-                            await telethon_client.send_message(bot_entity, "/claim")
-                            print(f"[+] [{account_label}] Dispatched text fallback command: /claim")
+                        alert_msg = (
+                            f"🚨 **MINING REWARD READY! [{account_label}]** 🚨\n\n"
+                            f"🤖 **Bot:** `{bot_username}`\n"
+                            f"📊 **Status:** Cycle complete or limit reached.\n"
+                            f"👉 Open your Telegram Mini-App and claim your tokens now!"
+                        )
+                        try:
+                            # Sends an alert straight to your Saved Messages so your phone buzzes
+                            await telethon_client.send_message("me", alert_msg)
+                            print(f"[+] [{account_label}] Dispatched push alert for {bot_username} to Saved Messages.")
+                        except Exception as push_err:
+                            print(f"[-] Failed to push notification: {push_err}")
                         break
                 
                 await asyncio.sleep(10)
@@ -380,7 +352,7 @@ async def main():
         BotCommand("help", "Show Bot Commands")
     ]
     await tg_app.bot.set_my_commands(tg_menu)
-    await tg_app.updater.start_polling(drop_pending_updates=True)
+    await tg_app.updater.start_polling(drop_pending_pending_updates=True if hasattr(tg_app.updater, 'drop_pending_updates') else True)
     
     asyncio.create_task(check_price_alerts_loop(tg_app, discord_bot))
 
@@ -397,7 +369,7 @@ async def main():
     asyncio.create_task(auto_claimer_loop(telethon_client_two, "Account-2"))
     # ----------------------------------------
 
-    print("[+] Master Cloud Bot + Dual Telegram WebApp Auto-Claimers active 24/7.")
+    print("[+] Master Cloud Bot + Dual Telegram Push Radars active 24/7.")
     try:
         await discord_bot.start(DISCORD_TOKEN)
     finally:
