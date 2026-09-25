@@ -21,6 +21,7 @@ from discord.ext import commands as discord_commands
 
 from google import genai
 from telethon import TelegramClient
+from telethon.sessions import StringSession
 
 load_dotenv()
 
@@ -346,7 +347,10 @@ async def main():
 
     # --- INITIALIZE BOTH TELETHON CLIENTS ---
     telethon_client_one = TelegramClient('mining_session', TELEGRAM_API_ID, TELEGRAM_API_HASH)
-    telethon_client_two = TelegramClient('second_account', TELEGRAM_API_ID, TELEGRAM_API_HASH)
+    
+    # Second account reads session string securely from environment variables
+    second_session_string = os.getenv("SECOND_SESSION_STRING", "")
+    telethon_client_two = TelegramClient(StringSession(second_session_string), TELEGRAM_API_ID, TELEGRAM_API_HASH)
     
     await telethon_client_one.start()
     await telethon_client_two.start()
