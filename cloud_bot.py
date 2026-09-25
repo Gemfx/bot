@@ -23,7 +23,6 @@ from google import genai
 from telethon import TelegramClient
 from telethon.sessions import StringSession
 from telethon.tl.functions.messages import RequestWebViewRequest
-from telethon.tl.types import KeyboardButtonUrl, KeyboardButtonCallback
 
 load_dotenv()
 
