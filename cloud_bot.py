@@ -196,7 +196,6 @@ async def auto_claimer_loop(telethon_client, account_label="Account-1"):
                             f"👉 Open your Telegram Mini-App and claim your tokens now!"
                         )
                         try:
-                            # Sends an alert straight to your Saved Messages so your phone buzzes
                             await telethon_client.send_message("me", alert_msg)
                             print(f"[+] [{account_label}] Dispatched push alert for {bot_username} to Saved Messages.")
                         except Exception as push_err:
@@ -352,7 +351,7 @@ async def main():
         BotCommand("help", "Show Bot Commands")
     ]
     await tg_app.bot.set_my_commands(tg_menu)
-    await tg_app.updater.start_polling(drop_pending_pending_updates=True if hasattr(tg_app.updater, 'drop_pending_updates') else True)
+    await tg_app.updater.start_polling(drop_pending_updates=True)
     
     asyncio.create_task(check_price_alerts_loop(tg_app, discord_bot))
 
