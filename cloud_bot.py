@@ -40,8 +40,8 @@ MINING_BOTS_RAW = os.getenv("MINING_BOT_USERNAME", "@YourTargetMiningBot")
 MINING_BOT_USERNAMES = [b.strip() for b in MINING_BOTS_RAW.split(",") if b.strip()]
 
 STATUS_COMMAND = "/balance"
-# "balance" removed to prevent false-positive claims on status replies
-CLAIM_KEYWORDS = ["full", "ready", "claim", "storage full", "available", "harvest", "collect"]
+# "claim" and "balance" removed to prevent loop triggers and false positives
+CLAIM_KEYWORDS = ["full", "ready", "storage full", "available", "harvest", "collect"]
 # --------------------------------------
 
 ACTIVE_ALERTS = []
