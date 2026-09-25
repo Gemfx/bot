@@ -213,7 +213,6 @@ async def auto_claimer_loop(telethon_client, account_label="Account-1"):
                                                 ))
                                                 if webview and hasattr(webview, 'url'):
                                                     parsed_url = webview.url
-                                                    # Extract initData token to emulate direct backend fulfillment if needed
                                                     headers = {
                                                         "User-Agent": "Mozilla/5.0 (Linux; Android 10) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/110.0.0.0 Mobile Safari/537.36",
                                                         "Referer": parsed_url
@@ -227,8 +226,8 @@ async def auto_claimer_loop(telethon_client, account_label="Account-1"):
                             except Exception as web_err:
                                 print(f"[-] [{account_label}] WebApp invocation sub-routine error: {web_err}")
                         
-                        # 2. Fallback text command if markup evaluation didn't fire or execute fully
-                        if not unclaimed_fallback := not claimed:
+                        # 2. Fallback text command if markup evaluation didn't execute fully
+                        if not claimed:
                             await telethon_client.send_message(bot_entity, "/claim")
                             print(f"[+] [{account_label}] Dispatched text fallback command: /claim")
                         break
