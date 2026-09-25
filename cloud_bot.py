@@ -40,7 +40,8 @@ MINING_BOTS_RAW = os.getenv("MINING_BOT_USERNAME", "@YourTargetMiningBot")
 MINING_BOT_USERNAMES = [b.strip() for b in MINING_BOTS_RAW.split(",") if b.strip()]
 
 STATUS_COMMAND = "/balance"
-CLAIM_KEYWORDS = ["full", "ready", "claim", "storage full", "available", "balance", "harvest", "collect"]
+# "balance" removed to prevent false-positive claims on status replies
+CLAIM_KEYWORDS = ["full", "ready", "claim", "storage full", "available", "harvest", "collect"]
 # --------------------------------------
 
 ACTIVE_ALERTS = []
@@ -162,7 +163,7 @@ async def check_price_alerts_loop(tg_app, discord_bot):
             if t in ACTIVE_ALERTS:
                 ACTIVE_ALERTS.remove(t)
 
-# --- MULTI-BOT TELETHON MINING WORKER LOOP (Enhanced Logging & Multi-Message Check) ---
+# --- MULTI-BOT TELETHON MINING WORKER LOOP ---
 async def auto_claimer_loop(telethon_client, account_label="Account-1"):
     print(f"[+] Telethon Multi-Bot Mining Auto-Claimer started for [{account_label}] targeting: {MINING_BOT_USERNAMES}")
     await asyncio.sleep(10)
