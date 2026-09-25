@@ -40,7 +40,6 @@ MINING_BOTS_RAW = os.getenv("MINING_BOT_USERNAME", "@UltrawalletTrade_Bot,@ATF_A
 MINING_BOT_USERNAMES = [b.strip() for b in MINING_BOTS_RAW.split(",") if b.strip()]
 
 STATUS_COMMAND = "/balance"
-CLAIM_KEYWORDS = ["full", "ready", "storage full", "available", "harvest", "collect", "cycle is complete"]
 # --------------------------------------
 
 ACTIVE_ALERTS = []
@@ -162,7 +161,7 @@ async def check_price_alerts_loop(tg_app, discord_bot):
             if t in ACTIVE_ALERTS:
                 ACTIVE_ALERTS.remove(t)
 
-# --- ADVANCED MINI APP WEBVIEW AUTO-CLAIMER ---
+# --- TARGET-SPECIFIC MINI APP WEBVIEW AUTO-CLAIMER ---
 async def auto_claimer_loop(telethon_client, account_label="Account-1"):
     print(f"[+] Telethon Mini-App Auto-Claimer started for [{account_label}] targeting: {MINING_BOT_USERNAMES}")
     await asyncio.sleep(10)
@@ -182,9 +181,15 @@ async def auto_claimer_loop(telethon_client, account_label="Account-1"):
                     message_text = latest_msg.message.lower()
                     print(f"[*] [{account_label}] [{bot_username}] Got Message: {latest_msg.message}")
                     
-                    should_claim = any(keyword in message_text for keyword in CLAIM_KEYWORDS)
+                    # Specific conditional filters for Ultra Wallet vs ATF Airdrop
+                    should_claim = False
+                    if "ultrawallet" in bot_username.lower() and ("240" in message_text or "lt" in message_text):
+                        should_claim = True
+                    elif "atf" in bot_username.lower() and ("claim" in message_text or "ready" in message_text):
+                        should_claim = True
+                    
                     if should_claim:
-                        print(f"[+] [{account_label}] [{bot_username}] Storage full detected! Launching WebApp session...")
+                        print(f"[+] [{account_label}] [{bot_username}] Target claim state detected! Launching WebApp session...")
                         claimed = False
                         
                         if latest_msg.reply_markup and hasattr(latest_msg.reply_markup, 'rows'):
