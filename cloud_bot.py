@@ -1,4 +1,4 @@
-﻿import os
+import os
 import time
 import asyncio
 from datetime import timedelta
@@ -12,7 +12,7 @@ import requests
 from bs4 import BeautifulSoup
 import yt_dlp
 
-from telegram import Update, BotCommand
+from telegram import Update, BotCommand, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 from telegram.request import HTTPXRequest
 
@@ -22,6 +22,12 @@ from discord.ext import commands as discord_commands
 from google import genai
 from telethon import TelegramClient
 from telethon.sessions import StringSession
+
+# --- FASTAPI BACKEND IMPORTS ---
+from fastapi import FastAPI
+from fastapi.responses import HTMLResponse, FileResponse
+import uvicorn
+# -------------------------------
 
 load_dotenv()
 
@@ -35,15 +41,14 @@ ALLOWED_USERS = [x.strip() for x in ALLOWED_USERS_RAW.split(",") if x.strip()]
 TELEGRAM_API_ID = int(os.getenv("TELEGRAM_API_ID", "1234567"))
 TELEGRAM_API_HASH = os.getenv("TELEGRAM_API_HASH", "f72565d820fde421d56172f2261dadd4")
 
-# Supports multiple bots separated by commas (e.g. "@BotOne, @BotTwo")
-MINING_BOTS_RAW = os.getenv("MINING_BOT_USERNAME", "@YourTargetMiningBot")
+MINING_BOTS_RAW = os.getenv("MINING_BOT_USERNAME", "@UltrawalletTrade_Bot,@ATF_AIRDROP_bot")
 MINING_BOT_USERNAMES = [b.strip() for b in MINING_BOTS_RAW.split(",") if b.strip()]
 
 STATUS_COMMAND = "/balance"
-CLAIM_KEYWORDS = ["full", "ready", "claim", "storage full", "available"]
 # --------------------------------------
 
 ACTIVE_ALERTS = []
+MINING_STATUS_STORE = {}  # Shared state for the backend API
 
 TICKER_MAP = {
     "usdt": "tether", "btc": "bitcoin", "eth": "ethereum",
@@ -77,7 +82,7 @@ def generate_ai_response(prompt: str) -> str:
             return "Error: GEMINI_API_KEY is missing."
         client = genai.Client(api_key=GEMINI_API_KEY)
         response = client.models.generate_content(
-            model="gemini-3.6-flash",
+            model="gemini-3.8-flash",
             contents=prompt,
         )
         return response.text
@@ -162,48 +167,102 @@ async def check_price_alerts_loop(tg_app, discord_bot):
             if t in ACTIVE_ALERTS:
                 ACTIVE_ALERTS.remove(t)
 
-# --- MULTI-BOT TELETHON MINING WORKER LOOP (Updated for dual accounts) ---
+# --- SMART THRESHOLD CLAIMER RADAR ---
 async def auto_claimer_loop(telethon_client, account_label="Account-1"):
-    print(f"[+] Telethon Multi-Bot Mining Auto-Claimer started for [{account_label}] targeting: {MINING_BOT_USERNAMES}")
+    print(f"[+] Smart Radar started for [{account_label}] targeting: {MINING_BOT_USERNAMES}")
     await asyncio.sleep(10)
+    
+    last_known_state = {}
+
     while True:
         for bot_username in MINING_BOT_USERNAMES:
             try:
-                print(f"[*] [{account_label}] Checking status for mining bot: {bot_username}")
+                print(f"[*] [{account_label}] Polling status for: {bot_username}")
                 bot_entity = await telethon_client.get_entity(bot_username)
-                await telethon_client.send_message(bot_entity, STATUS_COMMAND)
                 
-                await asyncio.sleep(5)
-                messages = await telethon_client.get_messages(bot_entity, limit=1)
-                if messages:
-                    latest_msg = messages[0]
-                    message_text = latest_msg.message.lower()
-                    print(f"[*] [{account_label}] [{bot_username}] Status: {latest_msg.message}")
+                await telethon_client.send_message(bot_entity, STATUS_COMMAND)
+                await asyncio.sleep(6)
+                
+                messages = await telethon_client.get_messages(bot_entity, limit=2)
+                for latest_msg in messages:
+                    if not latest_msg.message:
+                        continue
                     
-                    should_claim = any(keyword in message_text for keyword in CLAIM_KEYWORDS)
-                    if should_claim:
-                        print(f"[+] [{account_label}] [{bot_username}] Storage full/ready! Claiming...")
-                        if latest_msg.reply_markup:
-                            try:
-                                await latest_msg.click(0, 0)
-                                print(f"[+] [{account_label}] [{bot_username}] Clicked claim inline button successfully!")
-                            except Exception as btn_err:
-                                print(f"[-] [{account_label}] [{bot_username}] Failed to click inline button: {btn_err}")
-                        else:
-                            await telethon_client.send_message(bot_entity, "/claim")
-                            print(f"[+] [{account_label}] [{bot_username}] Sent text claim command.")
+                    message_text = latest_msg.message.lower()
+                    print(f"[*] [{account_label}] [{bot_username}] Response: {repr(latest_msg.message)}")
+                    
+                    is_ready_to_claim = any(k in message_text for k in ["frozen", "full", "ready", "complete", "harvest", "claim available", "limit reached"])
+                    
+                    if account_label not in MINING_STATUS_STORE:
+                        MINING_STATUS_STORE[account_label] = {}
+                    MINING_STATUS_STORE[account_label][bot_username] = {
+                        "status": "READY / FROZEN" if is_ready_to_claim else "ACTIVE / MINING",
+                        "last_response": latest_msg.message,
+                        "timestamp": time.time()
+                    }
+
+                    if is_ready_to_claim:
+                        if last_known_state.get(bot_username) != "ready":
+                            alert_msg = (
+                                f"🚨 **MINING REWARD READY! [{account_label}]** 🚨\n\n"
+                                f"🤖 **Bot:** `{bot_username}`\n"
+                                f"📊 **Status:** 24hr cycle complete / Storage is **FROZEN** or ready to claim!\n\n"
+                                f"👉 **Action Required:** Tap below to open your Mini-App and clear your rewards!"
+                            )
+                            
+                            keyboard = [[InlineKeyboardButton("🎯 CLAIM NOW", url=f"https://t.me/{bot_username.lstrip('@')}")]]
+                            reply_markup = InlineKeyboardMarkup(keyboard)
+                            
+                            me = await telethon_client.get_me()
+                            await telethon_client.send_message(me, alert_msg, buttons=reply_markup)
+                            print(f"[+] [{account_label}] Alert sent: {bot_username} requires claiming.")
+                            
+                            last_known_state[bot_username] = "ready"
+                    else:
+                        if "claim" not in message_text and "frozen" not in message_text:
+                            last_known_state[bot_username] = "active"
+                    
+                    break
                 
                 await asyncio.sleep(10)
             except Exception as e:
-                print(f"[-] [{account_label}] Error checking bot {bot_username}: {e}")
+                print(f"[-] [{account_label}] Error checking {bot_username}: {e}")
         
-        await asyncio.sleep(1800)
+        await asyncio.sleep(900)
+
+# --- FASTAPI BACKEND API SETUP (WITH MINI-APP DASHBOARD) ---
+api_app = FastAPI(title="Cloud Bot & Mining Dashboard API")
+
+@api_app.on_event("startup")
+async def startup_event():
+    # Automatically kick off background bots, polling, and mining loops when FastAPI boots
+    asyncio.create_task(main())
+
+@api_app.get("/", response_class=HTMLResponse)
+def root():
+    if os.path.exists("templates/index.html"):
+        return FileResponse("templates/index.html")
+    return {
+        "status": "online",
+        "service": "Master Cloud Bot + Dual Smart Mining Radars active 24/7",
+        "endpoints": ["/api/mining-status"]
+    }
+
+@api_app.get("/api/mining-status")
+async def get_mining_status():
+    """Endpoint to power the frontend Mini-App dashboard UI."""
+    return {
+        "status": "online",
+        "accounts": MINING_STATUS_STORE
+    }
+# ---------------------------------
 
 # Telegram Handlers
 async def tg_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if ALLOWED_USERS and str(update.effective_user.id) not in ALLOWED_USERS: return
     help_text = (
         "🤖 **24/7 Cloud Bot Commands**\n\n"
+        "📊 `/dashboard` — Open Mining Mini-App UI\n"
         "📈 `/predict <symbol>` — AI Technical Analysis\n"
         "💵 `/crypto <ticker>` — Live Crypto Price\n"
         "💱 `/forex <pair>` — Live Forex Rate\n"
@@ -213,6 +272,19 @@ async def tg_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "🤖 `/ai <prompt>` — Gemini AI Assistant"
     )
     await update.message.reply_text(help_text, parse_mode="Markdown")
+
+async def tg_dashboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if ALLOWED_USERS and str(update.effective_user.id) not in ALLOWED_USERS: return
+    
+    app_url = os.getenv("RENDER_EXTERNAL_URL", "https://your-app-name.onrender.com")
+    keyboard = [[InlineKeyboardButton("📊 Open Mining Dashboard", web_app={"url": app_url})]]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    await update.message.reply_text(
+        "🚀 **Smart Mining Radar Dashboard**\n\nTap the button below to launch your live mobile mini-app interface:",
+        reply_markup=reply_markup,
+        parse_mode="Markdown"
+    )
 
 async def tg_predict(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if ALLOWED_USERS and str(update.effective_user.id) not in ALLOWED_USERS: return
@@ -322,7 +394,7 @@ async def main():
     tg_app = ApplicationBuilder().token(TELEGRAM_TOKEN).request(HTTPXRequest(connect_timeout=30.0, read_timeout=30.0)).build()
     
     handlers = {
-        "help": tg_help, "predict": tg_predict, "crypto": tg_crypto, 
+        "help": tg_help, "dashboard": tg_dashboard, "predict": tg_predict, "crypto": tg_crypto, 
         "forex": tg_forex, "alert": tg_set_alert, "alerts": tg_list_alerts, 
         "clearalerts": tg_clear_alerts, "ai": tg_ai
     }
@@ -333,6 +405,7 @@ async def main():
     await tg_app.start()
     
     tg_menu = [
+        BotCommand("dashboard", "Open Mining Mini-App"),
         BotCommand("predict", "AI Technical Analysis"),
         BotCommand("crypto", "Crypto Price Lookup"),
         BotCommand("forex", "Forex Rate Lookup"),
@@ -345,26 +418,48 @@ async def main():
     
     asyncio.create_task(check_price_alerts_loop(tg_app, discord_bot))
 
-    # --- INITIALIZE BOTH TELETHON CLIENTS ---
-    telethon_client_one = TelegramClient('mining_session', TELEGRAM_API_ID, TELEGRAM_API_HASH)
-    
-    # Second account reads session string securely from environment variables
-    second_session_string = os.getenv("SECOND_SESSION_STRING", "")
-    telethon_client_two = TelegramClient(StringSession(second_session_string), TELEGRAM_API_ID, TELEGRAM_API_HASH)
-    
-    await telethon_client_one.start()
-    await telethon_client_two.start()
-    
-    asyncio.create_task(auto_claimer_loop(telethon_client_one, "Account-1"))
-    asyncio.create_task(auto_claimer_loop(telethon_client_two, "Account-2"))
+    # --- INITIALIZE BOTH TELETHON CLIENTS SAFELY ---
+    telethon_client_one = None
+    telethon_client_two = None
+
+    session_one = os.getenv("SESSION_STRING_ONE", "").strip()
+    if session_one:
+        try:
+            telethon_client_one = TelegramClient(StringSession(session_one), TELEGRAM_API_ID, TELEGRAM_API_HASH)
+            await telethon_client_one.start()
+            asyncio.create_task(auto_claimer_loop(telethon_client_one, "Account-1"))
+            print("[+] Account-1 Telethon client active.")
+        except Exception as e:
+            print(f"[!] Failed to start Account-1: {e}")
+    else:
+        print("[!] SESSION_STRING_ONE not found. Skipping Account-1.")
+
+    second_session_string = os.getenv("SECOND_SESSION_STRING", "").strip()
+    if second_session_string:
+        try:
+            telethon_client_two = TelegramClient(StringSession(second_session_string), TELEGRAM_API_ID, TELEGRAM_API_HASH)
+            await telethon_client_two.start()
+            asyncio.create_task(auto_claimer_loop(telethon_client_two, "Account-2"))
+            print("[+] Account-2 Telethon client active.")
+        except Exception as e:
+            print(f"[!] Failed to start Account-2: {e}")
+    else:
+        print("[!] SECOND_SESSION_STRING not found or empty. Skipping Account-2.")
     # ----------------------------------------
 
-    print("[+] Master Cloud Bot + Dual Telegram Auto-Claimers active 24/7.")
+    print("[+] Master Cloud Bot + Dual Smart Mining Radars active 24/7.")
     try:
-        await discord_bot.start(DISCORD_TOKEN)
+        if DISCORD_TOKEN and DISCORD_TOKEN != "your_discord_token_here":
+            await discord_bot.start(DISCORD_TOKEN)
+        else:
+            print("[!] DISCORD_TOKEN missing or placeholder. Keeping Telegram, Mini-App & API running...")
+            while True:
+                await asyncio.sleep(3600)
     finally:
-        await telethon_client_one.disconnect()
-        await telethon_client_two.disconnect()
+        if telethon_client_one:
+            await telethon_client_one.disconnect()
+        if telethon_client_two:
+            await telethon_client_two.disconnect()
         await tg_app.updater.stop()
         await tg_app.stop()
         await tg_app.shutdown()
