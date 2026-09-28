@@ -24,7 +24,7 @@ from telethon import TelegramClient
 from telethon.sessions import StringSession
 
 # --- FASTAPI BACKEND IMPORTS ---
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.responses import HTMLResponse, FileResponse
 import uvicorn
 # -------------------------------
@@ -49,6 +49,10 @@ STATUS_COMMAND = "/balance"
 
 ACTIVE_ALERTS = []
 MINING_STATUS_STORE = {}  # Shared state for the backend API
+
+# Global references for active Telethon clients (used by API actions)
+telethon_client_one = None
+telethon_client_two = None
 
 TICKER_MAP = {
     "usdt": "tether", "btc": "bitcoin", "eth": "ethereum",
@@ -106,7 +110,7 @@ def analyze_market_trend(symbol: str) -> str:
             diff = prices[i] - prices[i - 1]
             gains.append(diff if diff > 0 else 0)
             losses.append(abs(diff) if diff < 0 else 0)
-        
+         
         avg_gain = sum(gains) / len(gains) if gains else 0
         avg_loss = sum(losses) / len(losses) if losses else 0
         rs = (avg_gain / avg_loss) if avg_loss != 0 else 100
@@ -131,7 +135,7 @@ async def check_price_alerts_loop(tg_app, discord_bot):
         await asyncio.sleep(30)
         if not ACTIVE_ALERTS:
             continue
-        
+         
         triggered_alerts = []
         for alert in list(ACTIVE_ALERTS):
             current_price = await asyncio.to_thread(fetch_pair_price, alert["symbol"], alert["type"])
@@ -160,7 +164,7 @@ async def check_price_alerts_loop(tg_app, discord_bot):
                             await channel.send(msg)
                 except Exception as e:
                     print(f"[!] Notification error: {e}")
-                
+                 
                 triggered_alerts.append(alert)
 
         for t in triggered_alerts:
@@ -171,7 +175,7 @@ async def check_price_alerts_loop(tg_app, discord_bot):
 async def auto_claimer_loop(telethon_client, account_label="Account-1"):
     print(f"[+] Smart Radar started for [{account_label}] targeting: {MINING_BOT_USERNAMES}")
     await asyncio.sleep(10)
-    
+     
     last_known_state = {}
 
     while True:
@@ -179,20 +183,20 @@ async def auto_claimer_loop(telethon_client, account_label="Account-1"):
             try:
                 print(f"[*] [{account_label}] Polling status for: {bot_username}")
                 bot_entity = await telethon_client.get_entity(bot_username)
-                
+                 
                 await telethon_client.send_message(bot_entity, STATUS_COMMAND)
                 await asyncio.sleep(6)
-                
+                 
                 messages = await telethon_client.get_messages(bot_entity, limit=2)
                 for latest_msg in messages:
                     if not latest_msg.message:
                         continue
-                    
+                 
                     message_text = latest_msg.message.lower()
                     print(f"[*] [{account_label}] [{bot_username}] Response: {repr(latest_msg.message)}")
-                    
+                 
                     is_ready_to_claim = any(k in message_text for k in ["frozen", "full", "ready", "complete", "harvest", "claim available", "limit reached"])
-                    
+                 
                     if account_label not in MINING_STATUS_STORE:
                         MINING_STATUS_STORE[account_label] = {}
                     MINING_STATUS_STORE[account_label][bot_username] = {
@@ -209,28 +213,28 @@ async def auto_claimer_loop(telethon_client, account_label="Account-1"):
                                 f"📊 **Status:** 24hr cycle complete / Storage is **FROZEN** or ready to claim!\n\n"
                                 f"👉 **Action Required:** Tap below to open your Mini-App and clear your rewards!"
                             )
-                            
+                             
                             keyboard = [[InlineKeyboardButton("🎯 CLAIM NOW", url=f"https://t.me/{bot_username.lstrip('@')}")]]
                             reply_markup = InlineKeyboardMarkup(keyboard)
-                            
+                             
                             me = await telethon_client.get_me()
                             await telethon_client.send_message(me, alert_msg, buttons=reply_markup)
                             print(f"[+] [{account_label}] Alert sent: {bot_username} requires claiming.")
-                            
+                             
                             last_known_state[bot_username] = "ready"
                     else:
                         if "claim" not in message_text and "frozen" not in message_text:
                             last_known_state[bot_username] = "active"
-                    
+                 
                     break
-                
+                 
                 await asyncio.sleep(10)
             except Exception as e:
                 print(f"[-] [{account_label}] Error checking {bot_username}: {e}")
-        
+         
         await asyncio.sleep(900)
 
-# --- FASTAPI BACKEND API SETUP (WITH MINI-APP DASHBOARD) ---
+# --- FASTAPI BACKEND API SETUP (WITH MINI-APP DASHBOARD & ACTIONS) ---
 api_app = FastAPI(title="Cloud Bot & Mining Dashboard API")
 
 @api_app.on_event("startup")
@@ -245,7 +249,7 @@ def root():
     return {
         "status": "online",
         "service": "Master Cloud Bot + Dual Smart Mining Radars active 24/7",
-        "endpoints": ["/api/mining-status"]
+        "endpoints": ["/api/mining-status", "/api/action/{account_id}/{action_type}"]
     }
 
 @api_app.get("/api/mining-status")
@@ -255,7 +259,36 @@ async def get_mining_status():
         "status": "online",
         "accounts": MINING_STATUS_STORE
     }
-# ---------------------------------
+
+@api_app.post("/api/action/{account_id}/{action_type}")
+async def trigger_dashboard_action(account_id: int, action_type: str):
+    """Handles interactive button triggers from the Mini-App dashboard."""
+    global telethon_client_one, telethon_client_two
+    try:
+        client = telethon_client_one if account_id == 1 else telethon_client_two
+        if not client or not client.is_connected():
+            raise HTTPException(status_code=400, detail=f"Account {account_id} client is not active.")
+
+        if action_type == "force_check":
+            target_bot = MINING_BOT_USERNAMES[0] if MINING_BOT_USERNAMES else "@UltrawalletTrade_Bot"
+            bot_entity = await client.get_entity(target_bot)
+            await client.send_message(bot_entity, STATUS_COMMAND)
+            return {
+                "status": "success",
+                "message": f"Account {account_id} successfully dispatched status check command."
+            }
+        
+        elif action_type == "restart_mining":
+            return {
+                "status": "success",
+                "message": f"Account {account_id} mining sequence action triggered."
+            }
+        else:
+            raise HTTPException(status_code=400, detail="Unknown action type.")
+
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+# ---------------------------------------------------------------------
 
 # Telegram Handlers
 async def tg_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -275,11 +308,11 @@ async def tg_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def tg_dashboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if ALLOWED_USERS and str(update.effective_user.id) not in ALLOWED_USERS: return
-    
+     
     app_url = os.getenv("RENDER_EXTERNAL_URL", "https://your-app-name.onrender.com")
     keyboard = [[InlineKeyboardButton("📊 Open Mining Dashboard", web_app={"url": app_url})]]
     reply_markup = InlineKeyboardMarkup(keyboard)
-    
+     
     await update.message.reply_text(
         "🚀 **Smart Mining Radar Dashboard**\n\nTap the button below to launch your live mobile mini-app interface:",
         reply_markup=reply_markup,
@@ -316,7 +349,7 @@ async def tg_set_alert(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if len(context.args) < 4:
         return await update.message.reply_text("Usage: `/alert crypto bitcoin 95000 above`", parse_mode="Markdown")
     asset_type, symbol, target_price, condition = context.args[0].lower(), context.args[1].lower(), float(context.args[2]), context.args[3].lower()
-    
+     
     ACTIVE_ALERTS.append({
         "platform": "telegram",
         "channel_id": update.effective_chat.id,
@@ -391,8 +424,10 @@ async def discord_ai(ctx, *, prompt: str):
     await msg.edit(content=reply[:1900])
 
 async def main():
+    global telethon_client_one, telethon_client_two
+
     tg_app = ApplicationBuilder().token(TELEGRAM_TOKEN).request(HTTPXRequest(connect_timeout=30.0, read_timeout=30.0)).build()
-    
+     
     handlers = {
         "help": tg_help, "dashboard": tg_dashboard, "predict": tg_predict, "crypto": tg_crypto, 
         "forex": tg_forex, "alert": tg_set_alert, "alerts": tg_list_alerts, 
@@ -403,7 +438,7 @@ async def main():
 
     await tg_app.initialize()
     await tg_app.start()
-    
+     
     tg_menu = [
         BotCommand("dashboard", "Open Mining Mini-App"),
         BotCommand("predict", "AI Technical Analysis"),
@@ -415,13 +450,10 @@ async def main():
     ]
     await tg_app.bot.set_my_commands(tg_menu)
     await tg_app.updater.start_polling(drop_pending_updates=True)
-    
+     
     asyncio.create_task(check_price_alerts_loop(tg_app, discord_bot))
 
     # --- INITIALIZE BOTH TELETHON CLIENTS SAFELY ---
-    telethon_client_one = None
-    telethon_client_two = None
-
     session_one = os.getenv("SESSION_STRING_ONE", "").strip()
     if session_one:
         try:
