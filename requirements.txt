@@ -1,8 +1,11 @@
-﻿python-telegram-bot
+fastapi[standard]
+uvicorn
+python-dotenv
+telethon
+google-genai
+python-telegram-bot
 discord.py
 requests
 beautifulsoup4
 yt-dlp
-python-dotenv
-google-genai
 psutil
