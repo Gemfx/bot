@@ -44,21 +44,18 @@ TELEGRAM_API_HASH = os.getenv("TELEGRAM_API_HASH", "f72565d820fde421d56172f2261d
 MINING_BOTS_RAW = os.getenv("MINING_BOT_USERNAME", "@UltrawalletTrade_Bot,@ATF_AIRDROP_bot")
 MINING_BOT_USERNAMES = [b.strip() for b in MINING_BOTS_RAW.split(",") if b.strip()]
 
-STATUS_COMMAND = "/claim"  # <--- SET TO /claim
+STATUS_COMMAND = "/claim"
 # --------------------------------------
 
 ACTIVE_ALERTS = []
-MINING_STATUS_STORE = {}  # Shared state for the backend API
+MINING_STATUS_STORE = {}
 
-# --- DYNAMIC SETTINGS STORE ---
 DYNAMIC_CONFIG = {
-    "polling_interval": 900,  # Default 15 minutes
+    "polling_interval": 900,
     "auto_claim_enabled": True,
     "active_bots": list(MINING_BOT_USERNAMES)
 }
-# ------------------------------
 
-# Global references for active Telethon clients (used by API actions)
 telethon_client_one = None
 telethon_client_two = None
 
@@ -94,36 +91,35 @@ def generate_ai_response(prompt: str) -> str:
             return "Error: GEMINI_API_KEY is missing."
         client = genai.Client(api_key=GEMINI_API_KEY)
         response = client.models.generate_content(
-            model="gemini-3.8-flash",  # <--- UPDATED TO GEMINI 3.8 FLASH
+            model="gemini-3.8-flash",
             contents=prompt,
         )
         return response.text
     except Exception as e:
         return f"AI Error: {str(e)}"
 
-# --- ADVANCED GEMINI 3.8 VISION PARSER FOR SCREENSHOTS ---
+# --- MAD ADVANCED: GEMINI 3.8 VISION WEB-CANVAS INSPECTOR ---
 async def analyze_mining_screenshot_with_ai(image_bytes: bytes, bot_name: str) -> str:
-    """Uses Gemini 3.8 Flash multimodal vision to inspect mining dashboards."""
+    """Uses Gemini 3.8 Flash to visually inspect screenshot renders of canvas apps."""
     try:
         if not GEMINI_API_KEY:
             return "AI Vision Key Missing"
-        
         client = genai.Client(api_key=GEMINI_API_KEY)
         response = client.models.generate_content(
             model="gemini-3.8-flash",
             contents=[
                 image_bytes,
                 (
-                    f"Analyze this screenshot from the Telegram mining bot {bot_name}. "
-                    "1. Is the mining session ready to claim or complete? (Answer YES or NO). "
-                    "2. Read the current balance or token amount visible. "
-                    "3. Estimate time remaining if still mining. Keep it under 40 words."
+                    f"Analyze this UI render for mining bot {bot_name}. "
+                    "1. Is the claim button active or visible? (YES/NO). "
+                    "2. Extract current balance numbers. "
+                    "Keep response under 30 words."
                 )
             ]
         )
         return response.text
     except Exception as e:
-        return f"Vision Analysis Error: {str(e)}"
+        return f"Vision Error: {str(e)}"
 
 def analyze_market_trend(symbol: str) -> str:
     symbol_clean = TICKER_MAP.get(symbol.lower().strip(), symbol.lower().strip())
@@ -203,13 +199,12 @@ async def check_price_alerts_loop(tg_app, discord_bot):
             if t in ACTIVE_ALERTS:
                 ACTIVE_ALERTS.remove(t)
 
-# --- DAILY SUMMARY REPORTER LOOP ---
 async def daily_summary_reporter_loop(tg_app):
     while True:
         try:
             now = time.localtime()
             current_seconds = now.tm_hour * 3600 + now.tm_min * 60 + now.tm_sec
-            target_seconds = 8 * 3600  # 8:00 AM
+            target_seconds = 8 * 3600
             
             if current_seconds >= target_seconds:
                 sleep_seconds = (24 * 3600) - current_seconds + target_seconds
@@ -235,16 +230,16 @@ async def daily_summary_reporter_loop(tg_app):
                     try:
                         await tg_app.bot.send_message(chat_id=int(user_id), text=report, parse_mode="Markdown")
                     except Exception as e:
-                        print(f"[!] Failed to send daily report to user {user_id}: {e}")
+                        print(f"[!] Failed to send daily report: {e}")
             
             await asyncio.sleep(60)
         except Exception as e:
             print(f"[!] Error in daily summary reporter loop: {e}")
             await asyncio.sleep(3600)
 
-# --- MINI-APP RADAR & NOTIFIER LOOP (FALSE-POSITIVE FREE) ---
+# --- AUTONOMOUS MINI-APP RADAR LOOP ---
 async def auto_claimer_loop(telethon_client, account_label="Account-1"):
-    print(f"[+] Mini-App Radar started for [{account_label}]")
+    print(f"[+] Autonomous Mini-App Radar started for [{account_label}]")
     await asyncio.sleep(10)
      
     last_known_state = {}
@@ -253,7 +248,7 @@ async def auto_claimer_loop(telethon_client, account_label="Account-1"):
         current_bots = DYNAMIC_CONFIG.get("active_bots", MINING_BOT_USERNAMES)
         for bot_username in current_bots:
             try:
-                print(f"[*] [{account_label}] Checking status for: {bot_username} using command: {STATUS_COMMAND}")
+                print(f"[*] [{account_label}] Scanning Mini-App state for: {bot_username}")
                 bot_entity = await telethon_client.get_entity(bot_username)
                  
                 await telethon_client.send_message(bot_entity, STATUS_COMMAND)
@@ -265,11 +260,8 @@ async def auto_claimer_loop(telethon_client, account_label="Account-1"):
                         continue
                  
                     message_text = latest_msg.message.lower()
-                    
-                    # Check for explicit readiness keywords
                     is_ready = any(k in message_text for k in ["ready", "complete", "harvest", "claim available", "limit reached", "balance: 0"])
                     
-                    # Filter out active countdown timers
                     if "remaining" in message_text or "hrs" in message_text or "mins" in message_text or "sec" in message_text:
                         is_ready = False
 
@@ -339,13 +331,12 @@ async def update_settings(payload: dict):
             if clean_bots:
                 DYNAMIC_CONFIG["active_bots"] = clean_bots
                 MINING_BOT_USERNAMES = clean_bots
-        return {"status": "success", "message": "Settings updated successfully!", "settings": DYNAMIC_CONFIG}
+        return {"status": "success", "message": "Settings updated!", "settings": DYNAMIC_CONFIG}
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
 @api_app.post("/api/create-invoice")
 async def create_invoice():
-    """Generates a Telegram Stars invoice link for a 30-day subscription pass."""
     try:
         amount_stars = 150
         url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/createInvoiceLink"
@@ -376,23 +367,22 @@ async def trigger_dashboard_action(account_id: int, action_type: str):
             target_bot = MINING_BOT_USERNAMES[0] if MINING_BOT_USERNAMES else "@UltrawalletTrade_Bot"
             bot_entity = await client.get_entity(target_bot)
             await client.send_message(bot_entity, STATUS_COMMAND)
-            return {"status": "success", "message": f"Account {account_id} dispatched status check."}
+            return {"status": "success", "message": f"Account {account_id} dispatched check."}
         elif action_type == "restart_mining":
-            return {"status": "success", "message": f"Account {account_id} mining action triggered."}
+            return {"status": "success", "message": f"Account {account_id} action executed."}
         else:
             raise HTTPException(status_code=400, detail="Unknown action type.")
     except Exception as e:
         return {"status": "error", "message": str(e)}
 
-# Telegram Handlers
 async def tg_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if ALLOWED_USERS and str(update.effective_user.id) not in ALLOWED_USERS: return
     help_text = (
-        "🤖 **Cloud Bot Commands**\n\n"
-        "📊 `/dashboard` — Open Mini-App UI\n"
-        "📈 `/predict <symbol>` — AI Technical Analysis\n"
-        "💵 `/crypto <ticker>` — Live Crypto Price\n"
-        "⭐ `/upgrade` — Buy Pro Automation Pass\n"
+        "🤖 **Mad Advanced Cloud Bot**\n\n"
+        "📊 `/dashboard` — Open Web Dashboard\n"
+        "📈 `/predict <symbol>` — AI Market Analysis\n"
+        "💵 `/crypto <ticker>` — Crypto Spot Price\n"
+        "⭐ `/upgrade` — Buy Pro Pass with Stars\n"
         "🤖 `/ai <prompt>` — Gemini 3.8 Flash Assistant"
     )
     await update.message.reply_text(help_text, parse_mode="Markdown")
@@ -402,7 +392,7 @@ async def tg_dashboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
     app_url = os.getenv("RENDER_EXTERNAL_URL", "https://your-app-name.onrender.com")
     keyboard = [[InlineKeyboardButton("📊 Open Mining Dashboard", web_app={"url": app_url})]]
     reply_markup = InlineKeyboardMarkup(keyboard)
-    await update.message.reply_text("🚀 **Smart Mining Radar Dashboard**", reply_markup=reply_markup, parse_mode="Markdown")
+    await update.message.reply_text("🚀 **Autonomous Mining Control Center**", reply_markup=reply_markup, parse_mode="Markdown")
 
 async def tg_upgrade(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if ALLOWED_USERS and str(update.effective_user.id) not in ALLOWED_USERS: return
@@ -424,7 +414,7 @@ async def pre_checkout_handler(update: Update, context: ContextTypes.DEFAULT_TYP
 
 async def successful_payment_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     payment = update.message.successful_payment
-    await update.message.reply_text("🎉 **Subscription Activated!** Your cloud automation pass is now active for 30 days.")
+    await update.message.reply_text("🎉 **Subscription Activated!** Cloud automation pass active.")
 
 async def tg_predict(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if ALLOWED_USERS and str(update.effective_user.id) not in ALLOWED_USERS: return
@@ -491,7 +481,7 @@ async def main():
         except Exception as e:
             print(f"[!] Failed Account-2: {e}")
 
-    print("[+] Cloud Bot & Dashboard running successfully with Gemini 3.8 Flash.")
+    print("[+] Mad Advanced Bot fully operational with Gemini 3.8 Flash & Autonomous Radar.")
     while True:
         await asyncio.sleep(3600)
 
