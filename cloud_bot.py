@@ -44,7 +44,7 @@ TELEGRAM_API_HASH = os.getenv("TELEGRAM_API_HASH", "f72565d820fde421d56172f2261d
 MINING_BOTS_RAW = os.getenv("MINING_BOT_USERNAME", "@UltrawalletTrade_Bot,@ATF_AIRDROP_bot")
 MINING_BOT_USERNAMES = [b.strip() for b in MINING_BOTS_RAW.split(",") if b.strip()]
 
-STATUS_COMMAND = "/balance"
+STATUS_COMMAND = "/claim"  # <--- CHANGED FROM /balance TO /claim
 # --------------------------------------
 
 ACTIVE_ALERTS = []
@@ -229,7 +229,7 @@ async def auto_claimer_loop(telethon_client, account_label="Account-1"):
         current_bots = DYNAMIC_CONFIG.get("active_bots", MINING_BOT_USERNAMES)
         for bot_username in current_bots:
             try:
-                print(f"[*] [{account_label}] Polling status for: {bot_username}")
+                print(f"[*] [{account_label}] Polling status for: {bot_username} using command: {STATUS_COMMAND}")
                 bot_entity = await telethon_client.get_entity(bot_username)
                  
                 await telethon_client.send_message(bot_entity, STATUS_COMMAND)
@@ -252,7 +252,7 @@ async def auto_claimer_loop(telethon_client, account_label="Account-1"):
                         print(f"[DEBUG] No inline buttons found on message from {bot_username}.")
                     # -----------------------------------------------
 
-                    is_ready_to_claim = any(k in message_text for k in ["frozen", "full", "ready", "complete", "harvest", "claim available", "limit reached"])
+                    is_ready_to_claim = any(k in message_text for k in ["frozen", "full", "ready", "complete", "harvest", "claim available", "limit reached", "claim", "reward"])
                  
                     if account_label not in MINING_STATUS_STORE:
                         MINING_STATUS_STORE[account_label] = {}
