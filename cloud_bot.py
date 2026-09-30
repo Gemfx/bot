@@ -44,7 +44,7 @@ TELEGRAM_API_HASH = os.getenv("TELEGRAM_API_HASH", "f72565d820fde421d56172f2261d
 MINING_BOTS_RAW = os.getenv("MINING_BOT_USERNAME", "@UltrawalletTrade_Bot,@ATF_AIRDROP_bot")
 MINING_BOT_USERNAMES = [b.strip() for b in MINING_BOTS_RAW.split(",") if b.strip()]
 
-STATUS_COMMAND = "/claim"  # <--- CHANGED FROM /balance TO /claim
+STATUS_COMMAND = "/claim"  # <--- SET TO /claim
 # --------------------------------------
 
 ACTIVE_ALERTS = []
@@ -201,7 +201,7 @@ async def daily_summary_reporter_loop(tg_app):
                 for account_label, bots in MINING_STATUS_STORE.items():
                     report += f"👤 **{account_label}**\n"
                     for bot_name, info in bots.items():
-                        status_emoji = "🟢" if "ACTIVE" in info["status"] else "🚨"
+                        status_emoji = "🟢" if "READY" in info["status"] else "⏱️"
                         report += f"  {status_emoji} `{bot_name}`: **{info['status']}**\n"
                     report += "\n"
             report += "📊 _Check your web dashboard for full operational stats._"
@@ -218,9 +218,9 @@ async def daily_summary_reporter_loop(tg_app):
             print(f"[!] Error in daily summary reporter loop: {e}")
             await asyncio.sleep(3600)
 
-# --- SMART THRESHOLD CLAIMER RADAR (WITH DIAGNOSTIC LOGGING) ---
+# --- MINI-APP RADAR & NOTIFIER LOOP (FALSE-POSITIVE FREE) ---
 async def auto_claimer_loop(telethon_client, account_label="Account-1"):
-    print(f"[+] Smart Radar started for [{account_label}]")
+    print(f"[+] Mini-App Radar started for [{account_label}]")
     await asyncio.sleep(10)
      
     last_known_state = {}
@@ -229,7 +229,7 @@ async def auto_claimer_loop(telethon_client, account_label="Account-1"):
         current_bots = DYNAMIC_CONFIG.get("active_bots", MINING_BOT_USERNAMES)
         for bot_username in current_bots:
             try:
-                print(f"[*] [{account_label}] Polling status for: {bot_username} using command: {STATUS_COMMAND}")
+                print(f"[*] [{account_label}] Checking status for: {bot_username} using command: {STATUS_COMMAND}")
                 bot_entity = await telethon_client.get_entity(bot_username)
                  
                 await telethon_client.send_message(bot_entity, STATUS_COMMAND)
@@ -242,61 +242,36 @@ async def auto_claimer_loop(telethon_client, account_label="Account-1"):
                  
                     message_text = latest_msg.message.lower()
                     
-                    # --- DIAGNOSTIC LOGGING TO CATCH MISMATCHES ---
-                    print(f"[DEBUG] [{account_label}] [{bot_username}] Full text received: {repr(latest_msg.message)}")
-                    if latest_msg.buttons:
-                        for r_idx, row in enumerate(latest_msg.buttons):
-                            for b_idx, btn in enumerate(row):
-                                print(f"[DEBUG] Button [{r_idx}][{b_idx}] text: {repr(btn.text)}")
-                    else:
-                        print(f"[DEBUG] No inline buttons found on message from {bot_username}.")
-                    # -----------------------------------------------
+                    # Check for explicit readiness keywords
+                    is_ready = any(k in message_text for k in ["ready", "complete", "harvest", "claim available", "limit reached", "balance: 0"])
+                    
+                    # Filter out active countdown timers
+                    if "remaining" in message_text or "hrs" in message_text or "mins" in message_text or "sec" in message_text:
+                        is_ready = False
 
-                    is_ready_to_claim = any(k in message_text for k in ["frozen", "full", "ready", "complete", "harvest", "claim available", "limit reached", "claim", "reward"])
-                 
                     if account_label not in MINING_STATUS_STORE:
                         MINING_STATUS_STORE[account_label] = {}
                     MINING_STATUS_STORE[account_label][bot_username] = {
-                        "status": "READY / FROZEN" if is_ready_to_claim else "ACTIVE / MINING",
+                        "status": "READY TO CLAIM" if is_ready else "MINING IN PROGRESS",
                         "last_response": latest_msg.message,
                         "timestamp": time.time()
                     }
 
-                    if is_ready_to_claim:
+                    if is_ready:
                         if last_known_state.get(bot_username) != "ready":
-                            clicked_successfully = False
-                            if DYNAMIC_CONFIG.get("auto_claim_enabled", True):
-                                try:
-                                    if latest_msg.buttons:
-                                        for row in latest_msg.buttons:
-                                            for button in row:
-                                                btn_text = button.text.lower()
-                                                if any(k in btn_text for k in ["claim", "harvest", "start", "proceed", "collect", "balance"]):
-                                                    await button.click()
-                                                    clicked_successfully = True
-                                                    print(f"[+] [{account_label}] Auto-clicked button: '{button.text}' on {bot_username}")
-                                                    break
-                                            if clicked_successfully:
-                                                break
-                                except Exception as click_err:
-                                    print(f"[-] [{account_label}] Failed to auto-click button for {bot_username}: {click_err}")
-                            else:
-                                print(f"[!] [{account_label}] Auto-claim is disabled via settings panel.")
-
                             alert_msg = (
                                 f"🚨 **MINING REWARD READY! [{account_label}]** 🚨\n\n"
-                                f"🤖 **Bot:** `{bot_username}`\n"
-                                f"⚙️ **Auto-Click Action:** {'✅ Executed Successfully!' if clicked_successfully else '⚠️ Manual action needed (Disabled or no button found).'}"
+                                f"🤖 **Mini-App Bot:** `{bot_username}`\n"
+                                f"⚡ Cycle complete! Tap below to open the Mini-App and claim."
                             )
-                            keyboard = [[InlineKeyboardButton("🎯 OPEN BOT", url=f"https://t.me/{bot_username.lstrip('@')}")]]
+                            keyboard = [[InlineKeyboardButton("🎯 OPEN MINI-APP", url=f"https://t.me/{bot_username.lstrip('@')}")]]
                             reply_markup = InlineKeyboardMarkup(keyboard)
                              
                             me = await telethon_client.get_me()
-                            await telethon_client.send_message(me, alert_msg, buttons=reply_markup)
+                            await telethon_client.send_message(me, alert_msg, reply_markup=reply_markup)
                             last_known_state[bot_username] = "ready"
                     else:
-                        if "claim" not in message_text and "frozen" not in message_text:
-                            last_known_state[bot_username] = "active"
+                        last_known_state[bot_username] = "active"
                     break
                  
                 await asyncio.sleep(5)
