@@ -12,8 +12,8 @@ import requests
 from bs4 import BeautifulSoup
 import yt_dlp
 
-from telegram import Update, BotCommand, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
+from telegram import Update, BotCommand, InlineKeyboardButton, InlineKeyboardMarkup, LabeledPrice
+from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes, PreCheckoutQueryHandler, MessageHandler, filters
 from telegram.request import HTTPXRequest
 
 import discord
@@ -94,7 +94,7 @@ def generate_ai_response(prompt: str) -> str:
             return "Error: GEMINI_API_KEY is missing."
         client = genai.Client(api_key=GEMINI_API_KEY)
         response = client.models.generate_content(
-            model="gemini-3.8-flash",
+            model="gemini-2.5-flash",
             contents=prompt,
         )
         return response.text
@@ -181,7 +181,6 @@ async def check_price_alerts_loop(tg_app, discord_bot):
 
 # --- DAILY SUMMARY REPORTER LOOP ---
 async def daily_summary_reporter_loop(tg_app):
-    """Sends a daily summary digest of all tracked mining bots at 8:00 AM every day."""
     while True:
         try:
             now = time.localtime()
@@ -195,8 +194,7 @@ async def daily_summary_reporter_loop(tg_app):
                 
             await asyncio.sleep(sleep_seconds)
             
-            report = "☀ **Good Morning! Daily Mining Radar Digest** ☀️️\n\n"
-            
+            report = "☀ **Good Morning! Daily Mining Radar Digest** ☀\n\n"
             if not MINING_STATUS_STORE:
                 report += "⚠️ No mining status data recorded yet."
             else:
@@ -205,12 +203,8 @@ async def daily_summary_reporter_loop(tg_app):
                     for bot_name, info in bots.items():
                         status_emoji = "🟢" if "ACTIVE" in info["status"] else "🚨"
                         report += f"  {status_emoji} `{bot_name}`: **{info['status']}**\n"
-                        if info.get("last_response"):
-                            snippet = info['last_response'].replace('\n', ' ')[:50]
-                            report += f"    └ _{snippet}...\n"
                     report += "\n"
-            
-            report += "📊 _Check your dashboard for full details._"
+            report += "📊 _Check your web dashboard for full operational stats._"
             
             if ALLOWED_USERS:
                 for user_id in ALLOWED_USERS:
@@ -220,12 +214,11 @@ async def daily_summary_reporter_loop(tg_app):
                         print(f"[!] Failed to send daily report to user {user_id}: {e}")
             
             await asyncio.sleep(60)
-            
         except Exception as e:
             print(f"[!] Error in daily summary reporter loop: {e}")
             await asyncio.sleep(3600)
 
-# --- SMART THRESHOLD CLAIMER RADAR (WITH DYNAMIC CONFIG & AUTO-CLICKER) ---
+# --- SMART THRESHOLD CLAIMER RADAR ---
 async def auto_claimer_loop(telethon_client, account_label="Account-1"):
     print(f"[+] Smart Radar started for [{account_label}]")
     await asyncio.sleep(10)
@@ -248,8 +241,6 @@ async def auto_claimer_loop(telethon_client, account_label="Account-1"):
                         continue
                  
                     message_text = latest_msg.message.lower()
-                    print(f"[*] [{account_label}] [{bot_username}] Response: {repr(latest_msg.message)}")
-                 
                     is_ready_to_claim = any(k in message_text for k in ["frozen", "full", "ready", "complete", "harvest", "claim available", "limit reached"])
                  
                     if account_label not in MINING_STATUS_STORE:
@@ -262,7 +253,6 @@ async def auto_claimer_loop(telethon_client, account_label="Account-1"):
 
                     if is_ready_to_claim:
                         if last_known_state.get(bot_username) != "ready":
-                            
                             clicked_successfully = False
                             if DYNAMIC_CONFIG.get("auto_claim_enabled", True):
                                 try:
@@ -285,22 +275,17 @@ async def auto_claimer_loop(telethon_client, account_label="Account-1"):
                             alert_msg = (
                                 f"🚨 **MINING REWARD READY! [{account_label}]** 🚨\n\n"
                                 f"🤖 **Bot:** `{bot_username}`\n"
-                                f"📊 **Status:** Storage is **FROZEN** or ready!\n"
                                 f"⚙️ **Auto-Click Action:** {'✅ Executed Successfully!' if clicked_successfully else '⚠️ Manual action needed (Disabled or no button found).'}"
                             )
-                             
                             keyboard = [[InlineKeyboardButton("🎯 OPEN BOT", url=f"https://t.me/{bot_username.lstrip('@')}")]]
                             reply_markup = InlineKeyboardMarkup(keyboard)
                              
                             me = await telethon_client.get_me()
                             await telethon_client.send_message(me, alert_msg, buttons=reply_markup)
-                            print(f"[+] [{account_label}] Alert sent: {bot_username} requires claiming.")
-                             
                             last_known_state[bot_username] = "ready"
                     else:
                         if "claim" not in message_text and "frozen" not in message_text:
                             last_known_state[bot_username] = "active"
-                 
                     break
                  
                 await asyncio.sleep(5)
@@ -310,7 +295,7 @@ async def auto_claimer_loop(telethon_client, account_label="Account-1"):
         poll_interval = DYNAMIC_CONFIG.get("polling_interval", 900)
         await asyncio.sleep(poll_interval)
 
-# --- FASTAPI BACKEND API SETUP (WITH SETTINGS & DASHBOARD ACTIONS) ---
+# --- FASTAPI BACKEND API SETUP ---
 api_app = FastAPI(title="Cloud Bot & Mining Dashboard API")
 
 @api_app.on_event("startup")
@@ -321,18 +306,11 @@ async def startup_event():
 def root():
     if os.path.exists("templates/index.html"):
         return FileResponse("templates/index.html")
-    return {
-        "status": "online",
-        "service": "Master Cloud Bot + Dual Smart Mining Radars active 24/7",
-        "endpoints": ["/api/mining-status", "/api/settings", "/api/action/{account_id}/{action_type}"]
-    }
+    return {"status": "online", "service": "Master Cloud Bot active"}
 
 @api_app.get("/api/mining-status")
 async def get_mining_status():
-    return {
-        "status": "online",
-        "accounts": MINING_STATUS_STORE
-    }
+    return {"status": "online", "accounts": MINING_STATUS_STORE}
 
 @api_app.get("/api/settings")
 async def get_settings():
@@ -351,10 +329,30 @@ async def update_settings(payload: dict):
             if clean_bots:
                 DYNAMIC_CONFIG["active_bots"] = clean_bots
                 MINING_BOT_USERNAMES = clean_bots
-            
         return {"status": "success", "message": "Settings updated successfully!", "settings": DYNAMIC_CONFIG}
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+@api_app.post("/api/create-invoice")
+async def create_invoice():
+    """Generates a Telegram Stars invoice link for a 30-day subscription pass."""
+    try:
+        amount_stars = 150
+        url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/createInvoiceLink"
+        body = {
+            "title": "Mining Radar Pro Pass",
+            "description": "30-Day Automated Bot Cloud Hosting & Dashboard Access",
+            "payload": "monthly_subscription_pass",
+            "currency": "XTR",
+            "prices": [{"label": "1 Month Pass", "amount": amount_stars}]
+        }
+        res = requests.post(url, json=body, timeout=5).json()
+        if res.get("ok"):
+            return {"status": "success", "invoice_link": res["result"]}
+        else:
+            raise HTTPException(status_code=400, detail=res.get("description", "Failed to create invoice"))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 @api_app.post("/api/action/{account_id}/{action_type}")
 async def trigger_dashboard_action(account_id: int, action_type: str):
@@ -368,19 +366,11 @@ async def trigger_dashboard_action(account_id: int, action_type: str):
             target_bot = MINING_BOT_USERNAMES[0] if MINING_BOT_USERNAMES else "@UltrawalletTrade_Bot"
             bot_entity = await client.get_entity(target_bot)
             await client.send_message(bot_entity, STATUS_COMMAND)
-            return {
-                "status": "success",
-                "message": f"Account {account_id} successfully dispatched status check command."
-            }
-        
+            return {"status": "success", "message": f"Account {account_id} dispatched status check."}
         elif action_type == "restart_mining":
-            return {
-                "status": "success",
-                "message": f"Account {account_id} mining sequence action triggered."
-            }
+            return {"status": "success", "message": f"Account {account_id} mining action triggered."}
         else:
             raise HTTPException(status_code=400, detail="Unknown action type.")
-
     except Exception as e:
         return {"status": "error", "message": str(e)}
 
@@ -388,30 +378,44 @@ async def trigger_dashboard_action(account_id: int, action_type: str):
 async def tg_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if ALLOWED_USERS and str(update.effective_user.id) not in ALLOWED_USERS: return
     help_text = (
-        "🤖 **24/7 Cloud Bot Commands**\n\n"
-        "📊 `/dashboard` — Open Mining Mini-App UI\n"
+        "🤖 **Cloud Bot Commands**\n\n"
+        "📊 `/dashboard` — Open Mini-App UI\n"
         "📈 `/predict <symbol>` — AI Technical Analysis\n"
         "💵 `/crypto <ticker>` — Live Crypto Price\n"
-        "💱 `/forex <pair>` — Live Forex Rate\n"
-        "🚨 `/alert <crypto|forex> <symbol> <price> <above|below>`\n"
-        "📊 `/alerts` — List Active Alerts\n"
-        "🧹 `/clearalerts` — Clear Active Alerts\n"
+        "⭐ `/upgrade` — Buy Pro Automation Pass\n"
         "🤖 `/ai <prompt>` — Gemini AI Assistant"
     )
     await update.message.reply_text(help_text, parse_mode="Markdown")
 
 async def tg_dashboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if ALLOWED_USERS and str(update.effective_user.id) not in ALLOWED_USERS: return
-     
     app_url = os.getenv("RENDER_EXTERNAL_URL", "https://your-app-name.onrender.com")
     keyboard = [[InlineKeyboardButton("📊 Open Mining Dashboard", web_app={"url": app_url})]]
     reply_markup = InlineKeyboardMarkup(keyboard)
-     
-    await update.message.reply_text(
-        "🚀 **Smart Mining Radar Dashboard**\n\nTap the button below to launch your live mobile mini-app interface:",
-        reply_markup=reply_markup,
-        parse_mode="Markdown"
-    )
+    await update.message.reply_text("🚀 **Smart Mining Radar Dashboard**", reply_markup=reply_markup, parse_mode="Markdown")
+
+async def tg_upgrade(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if ALLOWED_USERS and str(update.effective_user.id) not in ALLOWED_USERS: return
+    # Send native star invoice directly in chat
+    try:
+        await context.bot.send_invoice(
+            chat_id=update.effective_chat.id,
+            title="Mining Radar Pro Pass",
+            description="30-Day Automated Bot Cloud Hosting & Dashboard Access",
+            payload="monthly_subscription_pass",
+            currency="XTR",
+            prices=[LabeledPrice("1 Month Pass", 150)]
+        )
+    except Exception as e:
+        await update.message.reply_text(f"❌ Error generating invoice: {e}")
+
+async def pre_checkout_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.pre_checkout_query
+    await query.answer(ok=True)
+
+async def successful_payment_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    payment = update.message.successful_payment
+    await update.message.reply_text("🎉 **Subscription Activated!** Your cloud automation pass is now active for 30 days.")
 
 async def tg_predict(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if ALLOWED_USERS and str(update.effective_user.id) not in ALLOWED_USERS: return
@@ -429,106 +433,20 @@ async def tg_crypto(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await update.message.reply_text("❌ Ticker not found.")
 
-async def tg_forex(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if ALLOWED_USERS and str(update.effective_user.id) not in ALLOWED_USERS: return
-    symbol = context.args[0] if context.args else "eurusd"
-    price = await asyncio.to_thread(fetch_pair_price, symbol, "forex")
-    if price:
-        await update.message.reply_text(f"💱 **{symbol.upper()}:** {price:,.4f}", parse_mode="Markdown")
-    else:
-        await update.message.reply_text("❌ Forex pair not found.")
-
-async def tg_set_alert(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if ALLOWED_USERS and str(update.effective_user.id) not in ALLOWED_USERS: return
-    if len(context.args) < 4:
-        return await update.message.reply_text("Usage: `/alert crypto bitcoin 95000 above`", parse_mode="Markdown")
-    asset_type, symbol, target_price, condition = context.args[0].lower(), context.args[1].lower(), float(context.args[2]), context.args[3].lower()
-     
-    ACTIVE_ALERTS.append({
-        "platform": "telegram",
-        "channel_id": update.effective_chat.id,
-        "symbol": symbol,
-        "target_price": target_price,
-        "condition": condition,
-        "type": asset_type
-    })
-    await update.message.reply_text(f"✅ Alert set for {symbol.upper()} {condition} ${target_price:,.4f}")
-
-async def tg_list_alerts(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if ALLOWED_USERS and str(update.effective_user.id) not in ALLOWED_USERS: return
-    chat_alerts = [a for a in ACTIVE_ALERTS if a["channel_id"] == update.effective_chat.id]
-    if not chat_alerts: return await update.message.reply_text("No active alerts.")
-    out = "📊 **Active Alerts:**\n"
-    for i, a in enumerate(chat_alerts, 1):
-        out += f"{i}. {a['symbol'].upper()} - Target: ${a['target_price']:,.4f} ({a['condition']})\n"
-    await update.message.reply_text(out, parse_mode="Markdown")
-
-async def tg_clear_alerts(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if ALLOWED_USERS and str(update.effective_user.id) not in ALLOWED_USERS: return
-    global ACTIVE_ALERTS
-    ACTIVE_ALERTS = [a for a in ACTIVE_ALERTS if a["channel_id"] != update.effective_chat.id]
-    await update.message.reply_text("🧹 Alerts cleared.")
-
-async def tg_ai(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if ALLOWED_USERS and str(update.effective_user.id) not in ALLOWED_USERS: return
-    prompt = " ".join(context.args)
-    if not prompt: return await update.message.reply_text("Usage: /ai <prompt>")
-    msg = await update.message.reply_text("Thinking...")
-    reply = await asyncio.to_thread(generate_ai_response, prompt)
-    await msg.edit_text(reply[:3800])
-
-# Discord Bot Setup
-intents = discord.Intents.default()
-intents.message_content = True
-discord_bot = discord_commands.Bot(command_prefix="!", intents=intents, help_command=None)
-
-@discord_bot.command(name="help")
-async def discord_help(ctx):
-    if ALLOWED_USERS and str(ctx.author.id) not in ALLOWED_USERS: return
-    embed = discord.Embed(title="🤖 24/7 Cloud Bot Commands", color=discord.Color.blue())
-    embed.add_field(name="Commands", value="`!predict <symbol>`\n`!crypto <ticker>`\n`!forex <pair>`\n`!alert <type> <symbol> <price> <above|below>`\n`!alerts`\n`!clearalerts`\n`!ai <prompt>`", inline=False)
-    await ctx.send(embed=embed)
-
-@discord_bot.command(name="predict")
-async def discord_predict(ctx, symbol: str = "bitcoin"):
-    if ALLOWED_USERS and str(ctx.author.id) not in ALLOWED_USERS: return
-    msg = await ctx.send(f"📊 Analyzing {symbol.upper()}...")
-    analysis = await asyncio.to_thread(analyze_market_trend, symbol)
-    await msg.edit(content=analysis[:1900])
-
-@discord_bot.command(name="crypto")
-async def discord_crypto(ctx, ticker: str):
-    if ALLOWED_USERS and str(ctx.author.id) not in ALLOWED_USERS: return
-    price = await asyncio.to_thread(fetch_pair_price, ticker, "crypto")
-    if price: await ctx.send(f"💵 **{ticker.upper()}:** ${price:,.4f}")
-    else: await ctx.send("❌ Ticker not found.")
-
-@discord_bot.command(name="forex")
-async def discord_forex(ctx, symbol: str):
-    if ALLOWED_USERS and str(ctx.author.id) not in ALLOWED_USERS: return
-    price = await asyncio.to_thread(fetch_pair_price, symbol, "forex")
-    if price: await ctx.send(f"💱 **{symbol.upper()}:** {price:,.4f}")
-    else: await ctx.send("❌ Forex pair not found.")
-
-@discord_bot.command(name="ai")
-async def discord_ai(ctx, *, prompt: str):
-    if ALLOWED_USERS and str(ctx.author.id) not in ALLOWED_USERS: return
-    msg = await ctx.send("Thinking...")
-    reply = await asyncio.to_thread(generate_ai_response, prompt)
-    await msg.edit(content=reply[:1900])
-
 async def main():
     global telethon_client_one, telethon_client_two
 
     tg_app = ApplicationBuilder().token(TELEGRAM_TOKEN).request(HTTPXRequest(connect_timeout=30.0, read_timeout=30.0)).build()
      
     handlers = {
-        "help": tg_help, "dashboard": tg_dashboard, "predict": tg_predict, "crypto": tg_crypto, 
-        "forex": tg_forex, "alert": tg_set_alert, "alerts": tg_list_alerts, 
-        "clearalerts": tg_clear_alerts, "ai": tg_ai
+        "help": tg_help, "dashboard": tg_dashboard, "predict": tg_predict, 
+        "crypto": tg_crypto, "upgrade": tg_upgrade
     }
     for name, handler in handlers.items():
         tg_app.add_handler(CommandHandler([name, name.upper()], handler))
+
+    tg_app.add_handler(PreCheckoutQueryHandler(pre_checkout_handler))
+    tg_app.add_handler(MessageHandler(filters.SUCCESSFUL_PAYMENT, successful_payment_handler))
 
     await tg_app.initialize()
     await tg_app.start()
@@ -537,29 +455,23 @@ async def main():
         BotCommand("dashboard", "Open Mining Mini-App"),
         BotCommand("predict", "AI Technical Analysis"),
         BotCommand("crypto", "Crypto Price Lookup"),
-        BotCommand("forex", "Forex Rate Lookup"),
-        BotCommand("alert", "Set Price Alert"),
-        BotCommand("alerts", "List Active Alerts"),
+        BotCommand("upgrade", "Buy Pro Pass with Stars"),
         BotCommand("help", "Show Bot Commands")
     ]
     await tg_app.bot.set_my_commands(tg_menu)
     await tg_app.updater.start_polling(drop_pending_updates=True)
      
-    asyncio.create_task(check_price_alerts_loop(tg_app, discord_bot))
+    asyncio.create_task(check_price_alerts_loop(tg_app, None))
     asyncio.create_task(daily_summary_reporter_loop(tg_app))
 
-    # --- INITIALIZE BOTH TELETHON CLIENTS SAFELY ---
     session_one = os.getenv("SESSION_STRING_ONE", "").strip()
     if session_one:
         try:
             telethon_client_one = TelegramClient(StringSession(session_one), TELEGRAM_API_ID, TELEGRAM_API_HASH)
             await telethon_client_one.start()
             asyncio.create_task(auto_claimer_loop(telethon_client_one, "Account-1"))
-            print("[+] Account-1 Telethon client active.")
         except Exception as e:
-            print(f"[!] Failed to start Account-1: {e}")
-    else:
-        print("[!] SESSION_STRING_ONE not found. Skipping Account-1.")
+            print(f"[!] Failed Account-1: {e}")
 
     second_session_string = os.getenv("SECOND_SESSION_STRING", "").strip()
     if second_session_string:
@@ -567,29 +479,12 @@ async def main():
             telethon_client_two = TelegramClient(StringSession(second_session_string), TELEGRAM_API_ID, TELEGRAM_API_HASH)
             await telethon_client_two.start()
             asyncio.create_task(auto_claimer_loop(telethon_client_two, "Account-2"))
-            print("[+] Account-2 Telethon client active.")
         except Exception as e:
-            print(f"[!] Failed to start Account-2: {e}")
-    else:
-        print("[!] SECOND_SESSION_STRING not found or empty. Skipping Account-2.")
-    # ----------------------------------------
+            print(f"[!] Failed Account-2: {e}")
 
-    print("[+] Master Cloud Bot + Dual Smart Mining Radars active 24/7.")
-    try:
-        if DISCORD_TOKEN and DISCORD_TOKEN != "your_discord_token_here":
-            await discord_bot.start(DISCORD_TOKEN)
-        else:
-            print("[!] DISCORD_TOKEN missing or placeholder. Keeping Telegram, Mini-App & API running...")
-            while True:
-                await asyncio.sleep(3600)
-    finally:
-        if telethon_client_one:
-            await telethon_client_one.disconnect()
-        if telethon_client_two:
-            await telethon_client_two.disconnect()
-        await tg_app.updater.stop()
-        await tg_app.stop()
-        await tg_app.shutdown()
+    print("[+] Cloud Bot & Dashboard running successfully.")
+    while True:
+        await asyncio.sleep(3600)
 
 if __name__ == "__main__":
     asyncio.run(main())
