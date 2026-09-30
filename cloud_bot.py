@@ -171,6 +171,52 @@ async def check_price_alerts_loop(tg_app, discord_bot):
             if t in ACTIVE_ALERTS:
                 ACTIVE_ALERTS.remove(t)
 
+# --- DAILY SUMMARY REPORTER LOOP ---
+async def daily_summary_reporter_loop(tg_app):
+    """Sends a daily summary digest of all tracked mining bots at 8:00 AM every day."""
+    while True:
+        try:
+            now = time.localtime()
+            current_seconds = now.tm_hour * 3600 + now.tm_min * 60 + now.tm_sec
+            target_seconds = 8 * 3600  # 8:00 AM
+            
+            if current_seconds >= target_seconds:
+                sleep_seconds = (24 * 3600) - current_seconds + target_seconds
+            else:
+                sleep_seconds = target_seconds - current_seconds
+                
+            await asyncio.sleep(sleep_seconds)
+            
+            report = "☀ **Good Morning! Daily Mining Radar Digest** ☀️\n\n"
+            
+            if not MINING_STATUS_STORE:
+                report += "⚠️ No mining status data recorded yet."
+            else:
+                for account_label, bots in MINING_STATUS_STORE.items():
+                    report += f"👤 **{account_label}**\n"
+                    for bot_name, info in bots.items():
+                        status_emoji = "🟢" if "ACTIVE" in info["status"] else "🚨"
+                        report += f"  {status_emoji} `{bot_name}`: **{info['status']}**\n"
+                        if info.get("last_response"):
+                            snippet = info['last_response'].replace('\n', ' ')[:50]
+                            report += f"    └ _{snippet}...\n"
+                    report += "\n"
+            
+            report += "📊 _Check your dashboard for full details._"
+            
+            if ALLOWED_USERS:
+                for user_id in ALLOWED_USERS:
+                    try:
+                        await tg_app.bot.send_message(chat_id=int(user_id), text=report, parse_mode="Markdown")
+                    except Exception as e:
+                        print(f"[!] Failed to send daily report to user {user_id}: {e}")
+            
+            await asyncio.sleep(60)
+            
+        except Exception as e:
+            print(f"[!] Error in daily summary reporter loop: {e}")
+            await asyncio.sleep(3600)
+
 # --- SMART THRESHOLD CLAIMER RADAR ---
 async def auto_claimer_loop(telethon_client, account_label="Account-1"):
     print(f"[+] Smart Radar started for [{account_label}] targeting: {MINING_BOT_USERNAMES}")
@@ -239,7 +285,6 @@ api_app = FastAPI(title="Cloud Bot & Mining Dashboard API")
 
 @api_app.on_event("startup")
 async def startup_event():
-    # Automatically kick off background bots, polling, and mining loops when FastAPI boots
     asyncio.create_task(main())
 
 @api_app.get("/", response_class=HTMLResponse)
@@ -254,7 +299,6 @@ def root():
 
 @api_app.get("/api/mining-status")
 async def get_mining_status():
-    """Endpoint to power the frontend Mini-App dashboard UI."""
     return {
         "status": "online",
         "accounts": MINING_STATUS_STORE
@@ -262,7 +306,6 @@ async def get_mining_status():
 
 @api_app.post("/api/action/{account_id}/{action_type}")
 async def trigger_dashboard_action(account_id: int, action_type: str):
-    """Handles interactive button triggers from the Mini-App dashboard."""
     global telethon_client_one, telethon_client_two
     try:
         client = telethon_client_one if account_id == 1 else telethon_client_two
@@ -288,7 +331,6 @@ async def trigger_dashboard_action(account_id: int, action_type: str):
 
     except Exception as e:
         return {"status": "error", "message": str(e)}
-# ---------------------------------------------------------------------
 
 # Telegram Handlers
 async def tg_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -452,6 +494,7 @@ async def main():
     await tg_app.updater.start_polling(drop_pending_updates=True)
      
     asyncio.create_task(check_price_alerts_loop(tg_app, discord_bot))
+    asyncio.create_task(daily_summary_reporter_loop(tg_app)) # <--- NEW DAILY DIGEST LOOP REGISTERED
 
     # --- INITIALIZE BOTH TELETHON CLIENTS SAFELY ---
     session_one = os.getenv("SESSION_STRING_ONE", "").strip()
