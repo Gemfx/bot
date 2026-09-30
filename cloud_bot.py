@@ -218,7 +218,7 @@ async def daily_summary_reporter_loop(tg_app):
             print(f"[!] Error in daily summary reporter loop: {e}")
             await asyncio.sleep(3600)
 
-# --- SMART THRESHOLD CLAIMER RADAR ---
+# --- SMART THRESHOLD CLAIMER RADAR (WITH DIAGNOSTIC LOGGING) ---
 async def auto_claimer_loop(telethon_client, account_label="Account-1"):
     print(f"[+] Smart Radar started for [{account_label}]")
     await asyncio.sleep(10)
@@ -241,6 +241,17 @@ async def auto_claimer_loop(telethon_client, account_label="Account-1"):
                         continue
                  
                     message_text = latest_msg.message.lower()
+                    
+                    # --- DIAGNOSTIC LOGGING TO CATCH MISMATCHES ---
+                    print(f"[DEBUG] [{account_label}] [{bot_username}] Full text received: {repr(latest_msg.message)}")
+                    if latest_msg.buttons:
+                        for r_idx, row in enumerate(latest_msg.buttons):
+                            for b_idx, btn in enumerate(row):
+                                print(f"[DEBUG] Button [{r_idx}][{b_idx}] text: {repr(btn.text)}")
+                    else:
+                        print(f"[DEBUG] No inline buttons found on message from {bot_username}.")
+                    # -----------------------------------------------
+
                     is_ready_to_claim = any(k in message_text for k in ["frozen", "full", "ready", "complete", "harvest", "claim available", "limit reached"])
                  
                     if account_label not in MINING_STATUS_STORE:
@@ -396,7 +407,6 @@ async def tg_dashboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def tg_upgrade(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if ALLOWED_USERS and str(update.effective_user.id) not in ALLOWED_USERS: return
-    # Send native star invoice directly in chat
     try:
         await context.bot.send_invoice(
             chat_id=update.effective_chat.id,
