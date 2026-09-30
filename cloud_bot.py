@@ -187,7 +187,7 @@ async def daily_summary_reporter_loop(tg_app):
                 
             await asyncio.sleep(sleep_seconds)
             
-            report = "☀ **Good Morning! Daily Mining Radar Digest** ☀️\n\n"
+            report = "☀ **Good Morning! Daily Mining Radar Digest** ☀️️\n\n"
             
             if not MINING_STATUS_STORE:
                 report += "⚠️ No mining status data recorded yet."
@@ -217,7 +217,7 @@ async def daily_summary_reporter_loop(tg_app):
             print(f"[!] Error in daily summary reporter loop: {e}")
             await asyncio.sleep(3600)
 
-# --- SMART THRESHOLD CLAIMER RADAR ---
+# --- SMART THRESHOLD CLAIMER RADAR (WITH AUTO INLINE CLICKER) ---
 async def auto_claimer_loop(telethon_client, account_label="Account-1"):
     print(f"[+] Smart Radar started for [{account_label}] targeting: {MINING_BOT_USERNAMES}")
     await asyncio.sleep(10)
@@ -253,14 +253,32 @@ async def auto_claimer_loop(telethon_client, account_label="Account-1"):
 
                     if is_ready_to_claim:
                         if last_known_state.get(bot_username) != "ready":
+                            
+                            # --- AUTOMATIC INLINE BUTTON CLICKER ---
+                            clicked_successfully = False
+                            try:
+                                if latest_msg.buttons:
+                                    for row in latest_msg.buttons:
+                                        for button in row:
+                                            btn_text = button.text.lower()
+                                            if any(k in btn_text for k in ["claim", "harvest", "start", "proceed", "collect", "balance"]):
+                                                await button.click()
+                                                clicked_successfully = True
+                                                print(f"[+] [{account_label}] Auto-clicked button: '{button.text}' on {bot_username}")
+                                                break
+                                        if clicked_successfully:
+                                            break
+                            except Exception as click_err:
+                                print(f"[-] [{account_label}] Failed to auto-click button for {bot_username}: {click_err}")
+
                             alert_msg = (
                                 f"🚨 **MINING REWARD READY! [{account_label}]** 🚨\n\n"
                                 f"🤖 **Bot:** `{bot_username}`\n"
-                                f"📊 **Status:** 24hr cycle complete / Storage is **FROZEN** or ready to claim!\n\n"
-                                f"👉 **Action Required:** Tap below to open your Mini-App and clear your rewards!"
+                                f"📊 **Status:** Storage is **FROZEN** or ready!\n"
+                                f"⚙️ **Auto-Click Action:** {'✅ Executed Successfully!' if clicked_successfully else '⚠️ Manual action needed (No matching button found).'}"
                             )
                              
-                            keyboard = [[InlineKeyboardButton("🎯 CLAIM NOW", url=f"https://t.me/{bot_username.lstrip('@')}")]]
+                            keyboard = [[InlineKeyboardButton("🎯 OPEN BOT", url=f"https://t.me/{bot_username.lstrip('@')}")]]
                             reply_markup = InlineKeyboardMarkup(keyboard)
                              
                             me = await telethon_client.get_me()
@@ -494,7 +512,7 @@ async def main():
     await tg_app.updater.start_polling(drop_pending_updates=True)
      
     asyncio.create_task(check_price_alerts_loop(tg_app, discord_bot))
-    asyncio.create_task(daily_summary_reporter_loop(tg_app)) # <--- NEW DAILY DIGEST LOOP REGISTERED
+    asyncio.create_task(daily_summary_reporter_loop(tg_app))
 
     # --- INITIALIZE BOTH TELETHON CLIENTS SAFELY ---
     session_one = os.getenv("SESSION_STRING_ONE", "").strip()
