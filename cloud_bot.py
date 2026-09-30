@@ -94,12 +94,36 @@ def generate_ai_response(prompt: str) -> str:
             return "Error: GEMINI_API_KEY is missing."
         client = genai.Client(api_key=GEMINI_API_KEY)
         response = client.models.generate_content(
-            model="gemini-2.5-flash",
+            model="gemini-3.8-flash",  # <--- UPDATED TO GEMINI 3.8 FLASH
             contents=prompt,
         )
         return response.text
     except Exception as e:
         return f"AI Error: {str(e)}"
+
+# --- ADVANCED GEMINI 3.8 VISION PARSER FOR SCREENSHOTS ---
+async def analyze_mining_screenshot_with_ai(image_bytes: bytes, bot_name: str) -> str:
+    """Uses Gemini 3.8 Flash multimodal vision to inspect mining dashboards."""
+    try:
+        if not GEMINI_API_KEY:
+            return "AI Vision Key Missing"
+        
+        client = genai.Client(api_key=GEMINI_API_KEY)
+        response = client.models.generate_content(
+            model="gemini-3.8-flash",
+            contents=[
+                image_bytes,
+                (
+                    f"Analyze this screenshot from the Telegram mining bot {bot_name}. "
+                    "1. Is the mining session ready to claim or complete? (Answer YES or NO). "
+                    "2. Read the current balance or token amount visible. "
+                    "3. Estimate time remaining if still mining. Keep it under 40 words."
+                )
+            ]
+        )
+        return response.text
+    except Exception as e:
+        return f"Vision Analysis Error: {str(e)}"
 
 def analyze_market_trend(symbol: str) -> str:
     symbol_clean = TICKER_MAP.get(symbol.lower().strip(), symbol.lower().strip())
@@ -369,7 +393,7 @@ async def tg_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "📈 `/predict <symbol>` — AI Technical Analysis\n"
         "💵 `/crypto <ticker>` — Live Crypto Price\n"
         "⭐ `/upgrade` — Buy Pro Automation Pass\n"
-        "🤖 `/ai <prompt>` — Gemini AI Assistant"
+        "🤖 `/ai <prompt>` — Gemini 3.8 Flash Assistant"
     )
     await update.message.reply_text(help_text, parse_mode="Markdown")
 
@@ -467,7 +491,7 @@ async def main():
         except Exception as e:
             print(f"[!] Failed Account-2: {e}")
 
-    print("[+] Cloud Bot & Dashboard running successfully.")
+    print("[+] Cloud Bot & Dashboard running successfully with Gemini 3.8 Flash.")
     while True:
         await asyncio.sleep(3600)
 
