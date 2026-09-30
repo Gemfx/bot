@@ -50,6 +50,14 @@ STATUS_COMMAND = "/balance"
 ACTIVE_ALERTS = []
 MINING_STATUS_STORE = {}  # Shared state for the backend API
 
+# --- DYNAMIC SETTINGS STORE ---
+DYNAMIC_CONFIG = {
+    "polling_interval": 900,  # Default 15 minutes
+    "auto_claim_enabled": True,
+    "active_bots": list(MINING_BOT_USERNAMES)
+}
+# ------------------------------
+
 # Global references for active Telethon clients (used by API actions)
 telethon_client_one = None
 telethon_client_two = None
@@ -217,15 +225,16 @@ async def daily_summary_reporter_loop(tg_app):
             print(f"[!] Error in daily summary reporter loop: {e}")
             await asyncio.sleep(3600)
 
-# --- SMART THRESHOLD CLAIMER RADAR (WITH AUTO INLINE CLICKER) ---
+# --- SMART THRESHOLD CLAIMER RADAR (WITH DYNAMIC CONFIG & AUTO-CLICKER) ---
 async def auto_claimer_loop(telethon_client, account_label="Account-1"):
-    print(f"[+] Smart Radar started for [{account_label}] targeting: {MINING_BOT_USERNAMES}")
+    print(f"[+] Smart Radar started for [{account_label}]")
     await asyncio.sleep(10)
      
     last_known_state = {}
 
     while True:
-        for bot_username in MINING_BOT_USERNAMES:
+        current_bots = DYNAMIC_CONFIG.get("active_bots", MINING_BOT_USERNAMES)
+        for bot_username in current_bots:
             try:
                 print(f"[*] [{account_label}] Polling status for: {bot_username}")
                 bot_entity = await telethon_client.get_entity(bot_username)
@@ -254,28 +263,30 @@ async def auto_claimer_loop(telethon_client, account_label="Account-1"):
                     if is_ready_to_claim:
                         if last_known_state.get(bot_username) != "ready":
                             
-                            # --- AUTOMATIC INLINE BUTTON CLICKER ---
                             clicked_successfully = False
-                            try:
-                                if latest_msg.buttons:
-                                    for row in latest_msg.buttons:
-                                        for button in row:
-                                            btn_text = button.text.lower()
-                                            if any(k in btn_text for k in ["claim", "harvest", "start", "proceed", "collect", "balance"]):
-                                                await button.click()
-                                                clicked_successfully = True
-                                                print(f"[+] [{account_label}] Auto-clicked button: '{button.text}' on {bot_username}")
+                            if DYNAMIC_CONFIG.get("auto_claim_enabled", True):
+                                try:
+                                    if latest_msg.buttons:
+                                        for row in latest_msg.buttons:
+                                            for button in row:
+                                                btn_text = button.text.lower()
+                                                if any(k in btn_text for k in ["claim", "harvest", "start", "proceed", "collect", "balance"]):
+                                                    await button.click()
+                                                    clicked_successfully = True
+                                                    print(f"[+] [{account_label}] Auto-clicked button: '{button.text}' on {bot_username}")
+                                                    break
+                                            if clicked_successfully:
                                                 break
-                                        if clicked_successfully:
-                                            break
-                            except Exception as click_err:
-                                print(f"[-] [{account_label}] Failed to auto-click button for {bot_username}: {click_err}")
+                                except Exception as click_err:
+                                    print(f"[-] [{account_label}] Failed to auto-click button for {bot_username}: {click_err}")
+                            else:
+                                print(f"[!] [{account_label}] Auto-claim is disabled via settings panel.")
 
                             alert_msg = (
                                 f"🚨 **MINING REWARD READY! [{account_label}]** 🚨\n\n"
                                 f"🤖 **Bot:** `{bot_username}`\n"
                                 f"📊 **Status:** Storage is **FROZEN** or ready!\n"
-                                f"⚙️ **Auto-Click Action:** {'✅ Executed Successfully!' if clicked_successfully else '⚠️ Manual action needed (No matching button found).'}"
+                                f"⚙️ **Auto-Click Action:** {'✅ Executed Successfully!' if clicked_successfully else '⚠️ Manual action needed (Disabled or no button found).'}"
                             )
                              
                             keyboard = [[InlineKeyboardButton("🎯 OPEN BOT", url=f"https://t.me/{bot_username.lstrip('@')}")]]
@@ -292,13 +303,14 @@ async def auto_claimer_loop(telethon_client, account_label="Account-1"):
                  
                     break
                  
-                await asyncio.sleep(10)
+                await asyncio.sleep(5)
             except Exception as e:
                 print(f"[-] [{account_label}] Error checking {bot_username}: {e}")
          
-        await asyncio.sleep(900)
+        poll_interval = DYNAMIC_CONFIG.get("polling_interval", 900)
+        await asyncio.sleep(poll_interval)
 
-# --- FASTAPI BACKEND API SETUP (WITH MINI-APP DASHBOARD & ACTIONS) ---
+# --- FASTAPI BACKEND API SETUP (WITH SETTINGS & DASHBOARD ACTIONS) ---
 api_app = FastAPI(title="Cloud Bot & Mining Dashboard API")
 
 @api_app.on_event("startup")
@@ -312,7 +324,7 @@ def root():
     return {
         "status": "online",
         "service": "Master Cloud Bot + Dual Smart Mining Radars active 24/7",
-        "endpoints": ["/api/mining-status", "/api/action/{account_id}/{action_type}"]
+        "endpoints": ["/api/mining-status", "/api/settings", "/api/action/{account_id}/{action_type}"]
     }
 
 @api_app.get("/api/mining-status")
@@ -321,6 +333,28 @@ async def get_mining_status():
         "status": "online",
         "accounts": MINING_STATUS_STORE
     }
+
+@api_app.get("/api/settings")
+async def get_settings():
+    return {"status": "success", "settings": DYNAMIC_CONFIG}
+
+@api_app.post("/api/settings")
+async def update_settings(payload: dict):
+    global DYNAMIC_CONFIG, MINING_BOT_USERNAMES
+    try:
+        if "polling_interval" in payload:
+            DYNAMIC_CONFIG["polling_interval"] = int(payload["polling_interval"])
+        if "auto_claim_enabled" in payload:
+            DYNAMIC_CONFIG["auto_claim_enabled"] = bool(payload["auto_claim_enabled"])
+        if "active_bots" in payload and isinstance(payload["active_bots"], list):
+            clean_bots = [b.strip() for b in payload["active_bots"] if b.strip()]
+            if clean_bots:
+                DYNAMIC_CONFIG["active_bots"] = clean_bots
+                MINING_BOT_USERNAMES = clean_bots
+            
+        return {"status": "success", "message": "Settings updated successfully!", "settings": DYNAMIC_CONFIG}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
 @api_app.post("/api/action/{account_id}/{action_type}")
 async def trigger_dashboard_action(account_id: int, action_type: str):
