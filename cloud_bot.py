@@ -51,7 +51,6 @@ from google import genai
 from telethon import TelegramClient
 from telethon.sessions import StringSession
 from telethon.errors import FloodWaitError
-from telethon.tl.types import KeyboardButtonUrl
 
 from fastapi import FastAPI, HTTPException, Depends, Header
 from fastapi.responses import FileResponse, JSONResponse
@@ -338,10 +337,18 @@ def classify_reply(raw_text: str) -> str:
 def extract_button_url(messages) -> str | None:
     """Grabs the mining bot's own link button (e.g. '🚀 Open Ultra Wallet') if it has one."""
     for m in messages:
-        for row in (m.buttons or []):
+        try:
+            rows = m.buttons or []
+        except Exception:
+            continue
+        for row in rows:
             for b in row:
-                if isinstance(b.button, KeyboardButtonUrl) and b.button.url.startswith(("https://", "http://", "tg://")):
-                    return b.button.url
+                raw = getattr(b, "button", b)
+                url = getattr(raw, "url", None)
+                # Only plain link buttons; Mini-App (WebView) buttons need Telegram's login data to open.
+                if type(raw).__name__ == "KeyboardButtonUrl" and isinstance(url, str) \
+                        and url.startswith(("https://", "http://", "tg://")):
+                    return url
     return None
 
 
