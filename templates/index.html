@@ -1,230 +1,578 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Smart Mining Radar Dashboard</title>
-    <script src="https://telegram.org/js/telegram-web-app.js"></script>
-    <style>
-        body {
-            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-            background-color: var(--tg-theme-bg-color, #121212);
-            color: var(--tg-theme-text-color, #ffffff);
-            margin: 0;
-            padding: 16px;
-        }
-        h1 { font-size: 1.4rem; text-align: center; margin-bottom: 12px; }
-        .nav-tabs { display: flex; gap: 6px; margin-bottom: 16px; }
-        .tab-btn {
-            flex: 1; background: var(--tg-theme-secondary-bg-color, #1e1e1e); color: var(--tg-theme-text-color, #ffffff);
-            border: none; padding: 10px 4px; border-radius: 8px; font-weight: bold; cursor: pointer; font-size: 0.8rem;
-        }
-        .tab-btn.active { background: var(--tg-theme-button-color, #2481cc); color: var(--tg-theme-button-text-color, #ffffff); }
-        .panel { display: none; }
-        .panel.active { display: block; }
-        .account-card, .settings-card {
-            background: var(--tg-theme-secondary-bg-color, #1e1e1e);
-            border-radius: 12px; padding: 14px; margin-bottom: 14px;
-            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
-        }
-        .account-title { font-weight: bold; font-size: 1.05rem; margin-bottom: 8px; color: #4ade80; }
-        .bot-item { margin: 6px 0; padding: 8px; background: rgba(255,255,255,0.05); border-radius: 8px; font-size: 0.85rem; }
-        .btn-group { display: flex; gap: 8px; margin-top: 12px; }
-        button.action-btn {
-            flex: 1; background: var(--tg-theme-button-color, #2481cc); color: var(--tg-theme-button-text-color, #ffffff);
-            border: none; padding: 10px 8px; border-radius: 8px; font-weight: bold; font-size: 0.8rem; cursor: pointer;
-        }
-        .form-group { margin-bottom: 12px; }
-        .form-group label { display: block; font-size: 0.85rem; margin-bottom: 4px; color: #a3a3a3; }
-        .form-group input, .form-group select {
-            width: 100%; padding: 8px; border-radius: 6px; border: 1px solid rgba(255,255,255,0.1);
-            background: rgba(0,0,0,0.2); color: #fff; box-sizing: border-box;
-        }
-        #status-msg { text-align: center; font-size: 0.85rem; margin-top: 10px; color: #4ade80; }
-    </style>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Mining Radar</title>
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Onest:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+  /* Colors follow the user's Telegram theme automatically (light or dark). */
+  :root {
+    --bg: var(--tg-theme-bg-color, #ffffff);
+    --surface: var(--tg-theme-secondary-bg-color, #eef1f4);
+    --text: var(--tg-theme-text-color, #15191e);
+    --hint: var(--tg-theme-hint-color, #6b7480);
+    --link: var(--tg-theme-link-color, #2a7bd1);
+    --btn: var(--tg-theme-button-color, #2a7bd1);
+    --btn-text: var(--tg-theme-button-text-color, #ffffff);
+    --ready: #1fa463;
+    --mining: #cf8a06;
+    --bad: #d64545;
+    --line: rgba(128, 128, 128, 0.22);
+    --radius: 14px;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: var(--tg-theme-bg-color, #17212b);
+      --surface: var(--tg-theme-secondary-bg-color, #232e3c);
+      --text: var(--tg-theme-text-color, #f2f4f6);
+      --hint: var(--tg-theme-hint-color, #8d99a6);
+      --link: var(--tg-theme-link-color, #6ab3f3);
+      --btn: var(--tg-theme-button-color, #5288c1);
+      --ready: #3ccf84;
+      --mining: #f0b03a;
+      --bad: #f06a6a;
+    }
+  }
+
+  * { box-sizing: border-box; }
+  html, body { margin: 0; background: var(--bg); color: var(--text); }
+  body {
+    font-family: "Onest", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    font-size: 15px;
+    line-height: 1.45;
+    padding: calc(env(safe-area-inset-top, 0px) + 16px) 16px calc(env(safe-area-inset-bottom, 0px) + 32px);
+    -webkit-font-smoothing: antialiased;
+  }
+  main { max-width: 560px; margin: 0 auto; }
+  h1, h2, h3 { margin: 0; font-weight: 700; letter-spacing: -0.01em; }
+  h1 { font-size: 22px; }
+  h2 { font-size: 17px; }
+  p { margin: 0; }
+  .hint { color: var(--hint); font-size: 13px; }
+  button, input, select, textarea { font: inherit; color: inherit; }
+  :focus-visible { outline: 2px solid var(--link); outline-offset: 2px; }
+
+  /* Header */
+  .top { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 18px; }
+  .icon-btn {
+    border: 0; background: var(--surface); width: 40px; height: 40px; border-radius: 50%;
+    display: grid; place-items: center; cursor: pointer;
+  }
+  .icon-btn svg { width: 20px; height: 20px; }
+  .icon-btn.spinning svg { animation: spin 0.9s linear infinite; }
+
+  /* Radar — the one memorable element */
+  .radar-wrap { display: grid; grid-template-columns: 148px 1fr; gap: 18px; align-items: center; margin-bottom: 22px; }
+  .radar {
+    position: relative; width: 148px; aspect-ratio: 1; border-radius: 50%;
+    background:
+      radial-gradient(circle, transparent 31%, var(--line) 31.5%, transparent 32.5%),
+      radial-gradient(circle, transparent 64%, var(--line) 64.5%, transparent 65.5%),
+      var(--surface);
+    overflow: hidden;
+  }
+  .radar::before, .radar::after {
+    content: ""; position: absolute; background: var(--line);
+  }
+  .radar::before { left: 50%; top: 0; bottom: 0; width: 1px; }
+  .radar::after { top: 50%; left: 0; right: 0; height: 1px; }
+  .sweep {
+    position: absolute; inset: 0; border-radius: 50%;
+    background: conic-gradient(from 0deg, transparent 0deg, transparent 290deg, color-mix(in srgb, var(--ready) 45%, transparent) 360deg);
+    animation: spin 4s linear infinite;
+  }
+  .radar.off .sweep { display: none; }
+  .blip {
+    position: absolute; width: 10px; height: 10px; margin: -5px 0 0 -5px; border-radius: 50%;
+    background: var(--mining); z-index: 2;
+  }
+  .blip.ready { background: var(--ready); box-shadow: 0 0 0 4px color-mix(in srgb, var(--ready) 30%, transparent); }
+  .blip.bad { background: var(--bad); }
+  .radar-center {
+    position: absolute; inset: 0; display: grid; place-items: center; z-index: 3; text-align: center;
+  }
+  .radar-center strong { font-size: 30px; line-height: 1; display: block; }
+  .radar-center span { font-size: 12px; color: var(--hint); }
+  .summary h2 { margin-bottom: 4px; }
+  .summary p + p { margin-top: 2px; }
+
+  /* Switch */
+  .switch-row { display: flex; align-items: center; gap: 10px; margin-top: 12px; cursor: pointer; }
+  .switch { position: relative; width: 44px; height: 26px; flex: none; }
+  .switch input { position: absolute; opacity: 0; inset: 0; margin: 0; cursor: pointer; }
+  .switch .track { position: absolute; inset: 0; border-radius: 13px; background: var(--line); transition: background 0.2s; }
+  .switch .thumb { position: absolute; top: 3px; left: 3px; width: 20px; height: 20px; border-radius: 50%; background: #fff; transition: transform 0.2s; box-shadow: 0 1px 2px rgba(0,0,0,0.25); }
+  .switch input:checked ~ .track { background: var(--ready); }
+  .switch input:checked ~ .thumb { transform: translateX(18px); }
+  .switch input:focus-visible ~ .track { outline: 2px solid var(--link); outline-offset: 2px; }
+
+  /* Sections */
+  section { margin-top: 26px; }
+  .section-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 10px; }
+  .list { background: var(--surface); border-radius: var(--radius); overflow: hidden; }
+  .row { padding: 12px 14px; }
+  .row + .row { border-top: 1px solid var(--line); }
+  .row-main { display: flex; align-items: center; gap: 10px; }
+  .row-name { font-weight: 600; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .status { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; font-weight: 600; white-space: nowrap; }
+  .status::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: currentColor; }
+  .status.ready { color: var(--ready); }
+  .status.mining { color: var(--mining); }
+  .status.bad { color: var(--bad); }
+  .row-meta { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-top: 6px; }
+  details.reply summary { cursor: pointer; color: var(--link); font-size: 13px; list-style: none; }
+  details.reply summary::-webkit-details-marker { display: none; }
+  details.reply pre {
+    margin: 8px 0 0; padding: 10px; border-radius: 10px; background: var(--bg);
+    white-space: pre-wrap; word-break: break-word; font-family: inherit; font-size: 13px; color: var(--text);
+    max-height: 200px; overflow: auto;
+  }
+
+  /* Buttons */
+  .btn {
+    border: 0; border-radius: 10px; padding: 10px 16px; cursor: pointer; font-weight: 600;
+    background: var(--btn); color: var(--btn-text);
+  }
+  .btn.small { padding: 7px 12px; font-size: 13px; }
+  .btn.quiet { background: transparent; color: var(--link); padding-left: 4px; padding-right: 4px; }
+  .btn.claim { background: var(--ready); color: #fff; }
+  .btn.wide { width: 100%; padding: 13px; }
+  .btn:disabled { opacity: 0.55; cursor: default; }
+
+  /* Forms */
+  .form { background: var(--surface); border-radius: var(--radius); padding: 14px; display: grid; gap: 14px; }
+  label.field { display: grid; gap: 6px; font-weight: 600; font-size: 14px; }
+  label.field .hint { font-weight: 400; }
+  input[type="text"], input[type="password"], select, textarea {
+    width: 100%; padding: 10px 12px; border-radius: 10px; border: 1px solid var(--line); background: var(--bg);
+  }
+  textarea { resize: vertical; min-height: 84px; }
+
+  .empty { padding: 18px 14px; color: var(--hint); }
+  .pass { display: flex; align-items: center; justify-content: space-between; gap: 14px; background: var(--surface); border-radius: var(--radius); padding: 14px; }
+
+  #auth { display: none; }
+  body.needs-auth #auth { display: block; }
+  body.needs-auth #app { display: none; }
+
+  .toast {
+    position: fixed; left: 50%; bottom: calc(env(safe-area-inset-bottom, 0px) + 20px);
+    transform: translate(-50%, 20px); opacity: 0; pointer-events: none;
+    background: var(--text); color: var(--bg); padding: 10px 16px; border-radius: 12px; font-size: 14px;
+    max-width: calc(100% - 32px); transition: opacity 0.2s, transform 0.2s; z-index: 10;
+  }
+  .toast.show { opacity: 1; transform: translate(-50%, 0); }
+  .toast.error { background: var(--bad); color: #fff; }
+
+  @keyframes spin { to { transform: rotate(360deg); } }
+  @media (prefers-reduced-motion: reduce) {
+    .sweep, .icon-btn.spinning svg { animation: none; }
+    .toast, .switch .thumb, .switch .track { transition: none; }
+  }
+  @media (max-width: 360px) {
+    .radar-wrap { grid-template-columns: 1fr; justify-items: center; text-align: center; }
+    .switch-row { justify-content: center; }
+  }
+</style>
 </head>
 <body>
+<main>
+  <div class="top">
+    <div>
+      <h1>Mining Radar</h1>
+      <p class="hint" id="updated">Loading…</p>
+    </div>
+    <button class="icon-btn" id="refreshBtn" aria-label="Refresh">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 3v6h-6"/></svg>
+    </button>
+  </div>
 
-    <h1>🚀 Mining Radar</h1>
-    
-    <div class="nav-tabs">
-        <button class="tab-btn active" onclick="switchTab('dashboard')">📊 Dashboard</button>
-        <button class="tab-btn" onclick="switchTab('settings')">⚙️ Settings</button>
-        <button class="tab-btn" onclick="switchTab('billing')">⭐ Upgrade</button>
+  <!-- Shown only when the API rejects the request -->
+  <div id="auth">
+    <div class="form">
+      <h2>Sign in to your dashboard</h2>
+      <p class="hint" id="authMsg">Open this dashboard from your bot with /dashboard, or enter your dashboard API key.</p>
+      <label class="field">API key
+        <input type="password" id="apiKeyInput" autocomplete="off" placeholder="DASHBOARD_API_KEY from Render">
+      </label>
+      <button class="btn" id="apiKeyBtn">Sign in</button>
+    </div>
+  </div>
+
+  <div id="app">
+    <div class="radar-wrap">
+      <div class="radar" id="radar" aria-hidden="true">
+        <div class="sweep"></div>
+        <div class="radar-center"><div><strong id="readyCount">–</strong><span>ready</span></div></div>
+      </div>
+      <div class="summary">
+        <h2 id="summaryTitle">Scanning…</h2>
+        <p class="hint" id="summaryLine"></p>
+        <label class="switch-row">
+          <span class="switch">
+            <input type="checkbox" id="radarToggle" role="switch">
+            <span class="track"></span><span class="thumb"></span>
+          </span>
+          <span id="radarToggleLabel">Radar on</span>
+        </label>
+      </div>
     </div>
 
-    <!-- DASHBOARD PANEL -->
-    <div id="dashboard-panel" class="panel active">
-        <div id="dashboard-container">Loading accounts...</div>
-    </div>
+    <div id="accounts"></div>
 
-    <!-- SETTINGS PANEL -->
-    <div id="settings-panel" class="panel">
-        <div class="settings-card">
-            <div class="account-title">🛠️ Radar Configuration</div>
-            <div class="form-group">
-                <label>Polling Interval (Seconds)</label>
-                <input type="number" id="setting-interval" value="900">
-            </div>
-            <div class="form-group">
-                <label>Auto-Claim Enabled</label>
-                <select id="setting-autoclaim">
-                    <option value="true">Enabled (Auto-Click)</option>
-                    <option value="false">Disabled (Alert Only)</option>
-                </select>
-            </div>
-            <div class="form-group">
-                <label>Target Bot Usernames (Comma Separated)</label>
-                <input type="text" id="setting-bots" value="@UltrawalletTrade_Bot, @ATF_AIRDROP_bot">
-            </div>
-            <button class="action-btn" onclick="saveSettings()" style="width: 100%; margin-top: 8px;">💾 Save Changes</button>
+    <section>
+      <div class="section-head"><h2>Settings</h2></div>
+      <div class="form">
+        <label class="field">Check every
+          <select id="interval">
+            <option value="300">5 minutes</option>
+            <option value="600">10 minutes</option>
+            <option value="900">15 minutes</option>
+            <option value="1800">30 minutes</option>
+            <option value="3600">1 hour</option>
+          </select>
+        </label>
+        <label class="field">Mining bots
+          <span class="hint">One username per line, e.g. @UltrawalletTrade_Bot</span>
+          <textarea id="bots" spellcheck="false"></textarea>
+        </label>
+        <label class="field">Words that mean "ready"
+          <span class="hint">Comma separated. If a bot's reply contains one of these, you get an alert.</span>
+          <input type="text" id="readyWords" spellcheck="false">
+        </label>
+        <label class="field">Words that mean "still mining"
+          <span class="hint">Comma separated. These win over the ready words. Countdowns like 17:35:17 are detected automatically.</span>
+          <input type="text" id="notReadyWords" spellcheck="false">
+        </label>
+        <button class="btn" id="saveBtn">Save settings</button>
+      </div>
+    </section>
+
+    <section>
+      <div class="pass">
+        <div>
+          <h2>Pro Pass</h2>
+          <p class="hint">30 days of cloud radar and dashboard access</p>
         </div>
-    </div>
+        <button class="btn" id="buyBtn">Buy with ⭐</button>
+      </div>
+    </section>
+  </div>
+</main>
 
-    <!-- BILLING PANEL -->
-    <div id="billing-panel" class="panel">
-        <div class="settings-card" style="text-align: center;">
-            <div class="account-title">⭐ Pro Automation Pass</div>
-            <p style="font-size: 0.85rem; color: #a3a3a3;">Get 24/7 uninterrupted cloud mining radar execution, auto-claim clickers, and priority polling.</p>
-            <h2 style="color: #facc15; margin: 12px 0;">150 Stars / Month</h2>
-            <button class="action-btn" onclick="buySubscription()" style="background: #facc15; color: #000; width: 100%;">Pay with Telegram Stars</button>
-        </div>
-    </div>
+<div class="toast" id="toast" role="status" aria-live="polite"></div>
 
-    <div id="status-msg"></div>
+<script>
+(() => {
+  const tg = window.Telegram && window.Telegram.WebApp;
+  const initData = (tg && tg.initData) || "";
+  if (tg) { tg.ready(); tg.expand(); }
 
-    <script>
-        const tg = window.Telegram.WebApp;
-        tg.expand();
+  let apiKey = "";
+  try { apiKey = localStorage.getItem("radar_api_key") || ""; } catch (e) {}
 
-        function switchTab(tabName) {
-            document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
-            document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
-            
-            if (tabName === 'dashboard') {
-                document.getElementById('dashboard-panel').classList.add('active');
-                event.target.classList.add('active');
-                fetchStatus();
-            } else if (tabName === 'settings') {
-                document.getElementById('settings-panel').classList.add('active');
-                event.target.classList.add('active');
-                fetchSettings();
-            } else if (tabName === 'billing') {
-                document.getElementById('billing-panel').classList.add('active');
-                event.target.classList.add('active');
-            }
-        }
+  const $ = (id) => document.getElementById(id);
+  let lastLoaded = 0;
+  let loading = false;
 
-        async function fetchStatus() {
-            try {
-                const response = await fetch('/api/mining-status');
-                const data = await response.json();
-                renderDashboard(data.accounts);
-            } catch (err) {
-                document.getElementById('dashboard-container').innerHTML = '<p style="color:red; text-align:center;">Failed to load status.</p>';
-            }
-        }
+  // ---------- helpers ----------
+  function toast(msg, isError = false) {
+    const t = $("toast");
+    t.textContent = msg;
+    t.classList.toggle("error", isError);
+    t.classList.add("show");
+    clearTimeout(toast._timer);
+    toast._timer = setTimeout(() => t.classList.remove("show"), 3200);
+    if (tg && tg.HapticFeedback) {
+      tg.HapticFeedback.notificationOccurred(isError ? "error" : "success");
+    }
+  }
 
-        function renderDashboard(accounts) {
-            const container = document.getElementById('dashboard-container');
-            if (!accounts || Object.keys(accounts).length === 0) {
-                container.innerHTML = '<p style="text-align:center;">No mining accounts currently active.</p>';
-                return;
-            }
+  function headers() {
+    const h = { "Content-Type": "application/json" };
+    if (initData) h["X-Telegram-Init-Data"] = initData;
+    if (apiKey) h["X-API-Key"] = apiKey;
+    return h;
+  }
 
-            let html = '';
-            for (const [accountLabel, bots] of Object.entries(accounts)) {
-                const accountId = accountLabel.includes('2') ? 2 : 1;
-                html += `<div class="account-card"><div class="account-title">👤 ${accountLabel}</div>`;
-                
-                for (const [botName, info] of Object.entries(bots)) {
-                    html += `<div class="bot-item">
-                        <strong>${botName}</strong><br>
-                        Status: <span>${info.status}</span><br>
-                        <small>Last: ${info.last_response || 'N/A'}</small>
-                    </div>`;
-                }
+  async function api(path, options = {}) {
+    const res = await fetch(path, { ...options, headers: headers() });
+    if (res.status === 401) { showAuth(); throw new Error("Not signed in"); }
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.detail || `Request failed (${res.status})`);
+    return data;
+  }
 
-                html += `<div class="btn-group">
-                            <button class="action-btn" onclick="triggerAction(${accountId}, 'force_check')">⚡ Force Status</button>
-                            <button class="action-btn" onclick="triggerAction(${accountId}, 'restart_mining')">🔄 Sync Bot</button>
-                         </div></div>`;
-            }
-            container.innerHTML = html;
-        }
+  function showAuth() {
+    document.body.classList.add("needs-auth");
+    $("updated").textContent = "Not signed in";
+    $("authMsg").textContent = initData
+      ? "Your Telegram account isn't on this bot's allowed list. Add your user ID to ALLOWED_USERS on Render, or sign in with the API key."
+      : "Open this dashboard from your bot with /dashboard, or enter your dashboard API key.";
+  }
 
-        async function fetchSettings() {
-            try {
-                const res = await fetch('/api/settings');
-                const data = await res.json();
-                if (data.status === 'success') {
-                    document.getElementById('setting-interval').value = data.settings.polling_interval;
-                    document.getElementById('setting-autoclaim').value = data.settings.auto_claim_enabled ? "true" : "false";
-                    document.getElementById('setting-bots').value = data.settings.active_bots.join(", ");
-                }
-            } catch (err) {
-                console.error("Failed to load settings");
-            }
-        }
+  function timeAgo(ts) {
+    const s = Math.max(0, Math.floor(Date.now() / 1000 - ts));
+    if (s < 60) return "just now";
+    if (s < 3600) return `${Math.floor(s / 60)} min ago`;
+    if (s < 86400) return `${Math.floor(s / 3600)} h ago`;
+    return `${Math.floor(s / 86400)} d ago`;
+  }
 
-        async function saveSettings() {
-            const msgEl = document.getElementById('status-msg');
-            msgEl.innerText = "Saving settings...";
-            
-            const interval = document.getElementById('setting-interval').value;
-            const autoClaim = document.getElementById('setting-autoclaim').value === 'true';
-            const bots = document.getElementById('setting-bots').value.split(',').map(b => b.trim());
+  const STATUS = {
+    "READY TO CLAIM": { cls: "ready", label: "Ready to claim" },
+    "MINING IN PROGRESS": { cls: "mining", label: "Mining" },
+    "NO REPLY": { cls: "bad", label: "No reply" },
+    "UNKNOWN": { cls: "bad", label: "Unclear reply" },
+  };
+  const statusInfo = (s) => STATUS[s] || { cls: "bad", label: s || "Unknown" };
 
-            try {
-                const res = await fetch('/api/settings', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ polling_interval: interval, auto_claim_enabled: autoClaim, active_bots: bots })
-                });
-                const result = await res.json();
-                msgEl.innerText = result.message || "Settings updated successfully!";
-                setTimeout(() => { msgEl.innerText = ""; }, 3000);
-            } catch (err) {
-                msgEl.innerText = "Error saving settings.";
-            }
-        }
+  function openLink(url) {
+    if (tg && url.startsWith("https://t.me/")) tg.openTelegramLink(url);
+    else if (tg) tg.openLink(url);
+    else window.open(url, "_blank", "noopener");
+  }
 
-        async function buySubscription() {
-            const msgEl = document.getElementById('status-msg');
-            msgEl.innerText = "Generating invoice...";
-            try {
-                const res = await fetch('/api/create-invoice', { method: 'POST' });
-                const data = await res.json();
-                if (data.status === 'success' && data.invoice_link) {
-                    msgEl.innerText = "";
-                    tg.openInvoice(data.invoice_link, (status) => {
-                        if (status === 'paid') {
-                            alert("Payment successful! Thank you for subscribing.");
-                        }
-                    });
-                } else {
-                    msgEl.innerText = "Could not generate invoice link.";
-                }
-            } catch (err) {
-                msgEl.innerText = "Error processing payment request.";
-            }
-        }
+  function el(tag, props = {}, children = []) {
+    const node = document.createElement(tag);
+    Object.entries(props).forEach(([k, v]) => {
+      if (k === "class") node.className = v;
+      else if (k === "text") node.textContent = v;   // textContent keeps bot replies from injecting HTML
+      else if (k.startsWith("on")) node.addEventListener(k.slice(2), v);
+      else node.setAttribute(k, v);
+    });
+    children.forEach((c) => c && node.appendChild(c));
+    return node;
+  }
 
-        async function triggerAction(accountId, actionType) {
-            const msgEl = document.getElementById('status-msg');
-            msgEl.innerText = `Executing ${actionType} for Account-${accountId}...`;
-            try {
-                const res = await fetch(`/api/action/${accountId}/${actionType}`, { method: 'POST' });
-                const result = await res.json();
-                msgEl.innerText = result.message || 'Action executed successfully!';
-                setTimeout(() => { msgEl.innerText = ""; fetchStatus(); }, 3000);
-            } catch (err) {
-                msgEl.innerText = 'Error executing action.';
-            }
-        }
+  // ---------- rendering ----------
+  function renderRadar(records, radarOn) {
+    const radar = $("radar");
+    radar.querySelectorAll(".blip").forEach((b) => b.remove());
+    radar.classList.toggle("off", !radarOn);
 
-        fetchStatus();
-        setInterval(fetchStatus, 15000);
-    </script>
+    const ready = records.filter((r) => r.info.status === "READY TO CLAIM").length;
+    $("readyCount").textContent = String(ready);
+
+    records.forEach((r, i) => {
+      const angle = (i / Math.max(records.length, 1)) * 2 * Math.PI - Math.PI / 2;
+      const radius = 0.36;
+      const blip = el("span", { class: "blip " + statusInfo(r.info.status).cls });
+      blip.style.left = `${50 + Math.cos(angle) * radius * 100}%`;
+      blip.style.top = `${50 + Math.sin(angle) * radius * 100}%`;
+      radar.appendChild(blip);
+    });
+
+    if (!records.length) {
+      $("summaryTitle").textContent = "No checks yet";
+      $("summaryLine").textContent = "The first scan runs a few seconds after the bot starts.";
+    } else {
+      const mining = records.filter((r) => r.info.status === "MINING IN PROGRESS").length;
+      const problems = records.length - ready - mining;
+      $("summaryTitle").textContent = ready ? `${ready} ready to claim` : "All bots mining";
+      const parts = [`${mining} mining`];
+      if (problems) parts.push(`${problems} need attention`);
+      $("summaryLine").textContent = parts.join(", ");
+    }
+  }
+
+  function renderAccounts(accounts) {
+    const root = $("accounts");
+    root.replaceChildren();
+    const labels = Object.keys(accounts).sort();
+
+    if (!labels.length) {
+      root.appendChild(el("section", {}, [
+        el("div", { class: "list" }, [
+          el("p", { class: "empty", text: "No account has reported yet. Check that SESSION_STRING_ONE is set on Render and watch the logs for \"Mini-App Radar started\"." }),
+        ]),
+      ]));
+      return;
+    }
+
+    labels.forEach((label) => {
+      const bots = accounts[label];
+      const accountId = parseInt((label.match(/\d+/) || ["0"])[0], 10);
+
+      const checkBtn = el("button", { class: "btn small", text: "Check now" });
+      checkBtn.addEventListener("click", () => forceCheck(accountId, checkBtn));
+
+      const list = el("div", { class: "list" });
+      Object.keys(bots).sort().forEach((botName) => {
+        const info = bots[botName];
+        const st = statusInfo(info.status);
+        const claimUrl = info.button_url || `https://t.me/${botName.replace(/^@/, "")}`;
+
+        const actions = st.cls === "ready"
+          ? el("button", { class: "btn small claim", text: "Open & claim", onclick: () => openLink(claimUrl) })
+          : el("button", { class: "btn small quiet", text: "Open bot", onclick: () => openLink(claimUrl) });
+
+        const reply = info.last_response
+          ? el("details", { class: "reply" }, [
+              el("summary", { text: "Last reply" }),
+              el("pre", { text: info.last_response }),
+            ])
+          : el("span", { class: "hint", text: "No text in reply" });
+
+        list.appendChild(el("div", { class: "row" }, [
+          el("div", { class: "row-main" }, [
+            el("span", { class: "row-name", text: botName }),
+            el("span", { class: "status " + st.cls, text: st.label }),
+          ]),
+          el("div", { class: "row-meta" }, [
+            el("span", { class: "hint", text: `Checked ${timeAgo(info.timestamp)}` }),
+            actions,
+          ]),
+          el("div", { style: "margin-top:6px" }, [reply]),
+        ]));
+      });
+
+      root.appendChild(el("section", {}, [
+        el("div", { class: "section-head" }, [el("h2", { text: label }), checkBtn]),
+        list,
+      ]));
+    });
+  }
+
+  function fillSettings(s) {
+    const interval = $("interval");
+    const val = String(s.polling_interval);
+    if (![...interval.options].some((o) => o.value === val)) {
+      interval.appendChild(el("option", { value: val, text: `${Math.round(s.polling_interval / 60)} minutes` }));
+    }
+    interval.value = val;
+    $("bots").value = (s.active_bots || []).join("\n");
+    $("readyWords").value = (s.ready_keywords || []).join(", ");
+    $("notReadyWords").value = (s.not_ready_keywords || []).join(", ");
+    $("radarToggle").checked = !!s.auto_claim_enabled;
+    $("radarToggleLabel").textContent = s.auto_claim_enabled ? "Radar on" : "Radar paused";
+  }
+
+  // ---------- actions ----------
+  async function load(silent = false) {
+    if (loading) return;
+    loading = true;
+    $("refreshBtn").classList.add("spinning");
+    try {
+      const [status, settings] = await Promise.all([api("/api/mining-status"), api("/api/settings")]);
+      document.body.classList.remove("needs-auth");
+      const accounts = status.accounts || {};
+      const records = [];
+      Object.keys(accounts).forEach((a) =>
+        Object.keys(accounts[a]).forEach((b) => records.push({ account: a, bot: b, info: accounts[a][b] }))
+      );
+      renderRadar(records, settings.settings.auto_claim_enabled);
+      renderAccounts(accounts);
+      if (!document.activeElement || !document.activeElement.closest(".form")) {
+        fillSettings(settings.settings);  // don't overwrite fields while you're typing
+      }
+      lastLoaded = Date.now();
+      updateStamp();
+    } catch (e) {
+      if (e.message !== "Not signed in" && !silent) toast(e.message, true);
+    } finally {
+      loading = false;
+      $("refreshBtn").classList.remove("spinning");
+    }
+  }
+
+  function updateStamp() {
+    if (lastLoaded) $("updated").textContent = `Updated ${timeAgo(lastLoaded / 1000)}`;
+  }
+
+  async function forceCheck(accountId, btn) {
+    btn.disabled = true;
+    btn.textContent = "Checking…";
+    try {
+      const data = await api(`/api/action/${accountId}/force_check`, { method: "POST" });
+      const ready = Object.values(data.results || {}).filter((s) => s === "READY TO CLAIM").length;
+      toast(ready ? `${ready} bot(s) ready to claim` : "Check finished. Nothing ready yet.");
+      await load(true);
+    } catch (e) {
+      toast(e.message, true);
+    } finally {
+      btn.disabled = false;
+      btn.textContent = "Check now";
+    }
+  }
+
+  async function saveSettings(partial, successMsg) {
+    const data = await api("/api/settings", { method: "POST", body: JSON.stringify(partial) });
+    fillSettings(data.settings);
+    toast(successMsg);
+    return data;
+  }
+
+  $("saveBtn").addEventListener("click", async () => {
+    const btn = $("saveBtn");
+    const splitWords = (v) => v.split(",").map((w) => w.trim()).filter(Boolean);
+    const bots = $("bots").value.split(/[\n,]/).map((b) => b.trim()).filter(Boolean);
+    if (!bots.length) { toast("Add at least one mining bot.", true); return; }
+    btn.disabled = true;
+    try {
+      await saveSettings({
+        polling_interval: parseInt($("interval").value, 10),
+        active_bots: bots,
+        ready_keywords: splitWords($("readyWords").value),
+        not_ready_keywords: splitWords($("notReadyWords").value),
+      }, "Settings saved");
+      document.activeElement && document.activeElement.blur();
+      load(true);
+    } catch (e) {
+      toast(e.message, true);
+    } finally {
+      btn.disabled = false;
+    }
+  });
+
+  $("radarToggle").addEventListener("change", async (ev) => {
+    const on = ev.target.checked;
+    try {
+      await saveSettings({ auto_claim_enabled: on }, on ? "Radar on" : "Radar paused");
+      $("radar").classList.toggle("off", !on);
+    } catch (e) {
+      ev.target.checked = !on;
+      toast(e.message, true);
+    }
+  });
+
+  $("buyBtn").addEventListener("click", async () => {
+    const btn = $("buyBtn");
+    btn.disabled = true;
+    try {
+      const data = await api("/api/create-invoice", { method: "POST" });
+      if (tg && tg.openInvoice) {
+        tg.openInvoice(data.invoice_link, (status) => {
+          if (status === "paid") toast("Pro Pass activated");
+          else if (status === "failed") toast("Payment failed. Try again.", true);
+        });
+      } else {
+        window.open(data.invoice_link, "_blank", "noopener");
+      }
+    } catch (e) {
+      toast(e.message, true);
+    } finally {
+      btn.disabled = false;
+    }
+  });
+
+  $("refreshBtn").addEventListener("click", () => load());
+
+  $("apiKeyBtn").addEventListener("click", () => {
+    apiKey = $("apiKeyInput").value.trim();
+    try { localStorage.setItem("radar_api_key", apiKey); } catch (e) {}
+    load();
+  });
+
+  // ---------- start ----------
+  load();
+  setInterval(() => load(true), 30000);
+  setInterval(updateStamp, 15000);
+})();
+</script>
 </body>
 </html>
