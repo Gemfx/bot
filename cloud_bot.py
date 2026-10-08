@@ -48,7 +48,7 @@ from telegram.ext import (
 from telegram.request import HTTPXRequest
 
 from google import genai
-from telethon import TelegramClient
+from telethon import TelegramClient, events
 from telethon.sessions import StringSession
 from telethon.errors import FloodWaitError
 
@@ -75,8 +75,12 @@ ENV_BOTS = [
     for b in os.getenv("MINING_BOT_USERNAME", "@UltrawalletTrade_Bot,@ATF_AIRDROP_bot").split(",")
     if b.strip()
 ]
-STATUS_COMMAND = os.getenv("STATUS_COMMAND", "/claim").strip()
-REPLY_TIMEOUT = int(os.getenv("REPLY_TIMEOUT", "20"))  # seconds to wait for a mining bot reply
+# Most Mini-App bots ignore commands and instead SEND you a message when mining is done.
+# So by default the radar only reads their messages. Set STATUS_COMMAND (e.g. /claim)
+# only if your bots actually answer a command.
+STATUS_COMMAND = os.getenv("STATUS_COMMAND", "").strip()
+REPLY_TIMEOUT = int(os.getenv("REPLY_TIMEOUT", "20"))  # seconds to wait for a reply when probing
+ALERT_MAX_AGE = int(os.getenv("ALERT_MAX_AGE_HOURS", "6")) * 3600  # skip alerts for older messages
 
 REPORT_TZ = ZoneInfo(os.getenv("REPORT_TIMEZONE", "Africa/Lagos"))
 REPORT_HOUR = int(os.getenv("REPORT_HOUR", "8"))
@@ -112,6 +116,7 @@ TICKER_MAP = {
 # =====================================================================
 DYNAMIC_CONFIG = dict(DEFAULT_CONFIG)
 MINING_STATUS_STORE = {}
+LAST_ALERTED = {}        # {"Account-1|@bot": last alerted message id}
 ACTIVE_ALERTS = []
 TG_APP = None
 TELETHON_CLIENTS = {}     # {1: TelegramClient, 2: TelegramClient}
@@ -205,7 +210,7 @@ def get_subscription_expiry(user_id: int) -> float | None:
 
 
 def load_state_sync():
-    global DYNAMIC_CONFIG, MINING_STATUS_STORE, ACTIVE_ALERTS
+    global DYNAMIC_CONFIG, MINING_STATUS_STORE, ACTIVE_ALERTS, LAST_ALERTED
     cfg = dict(DEFAULT_CONFIG)
     cfg.update(kv_get("config", {}) or {})
 
@@ -219,6 +224,7 @@ def load_state_sync():
     kv_set("config", cfg)
     MINING_STATUS_STORE = kv_get("mining_status", {}) or {}
     ACTIVE_ALERTS = kv_get("price_alerts", []) or []
+    LAST_ALERTED = kv_get("last_alerted", {}) or {}
 
 
 def fmt_time(ts: float) -> str:
@@ -355,39 +361,100 @@ def extract_button_url(messages) -> str | None:
     return None
 
 
-async def fetch_bot_replies(client: TelegramClient, bot_username: str):
-    """Sends the status command and returns ONLY the bot's replies to it (oldest first)."""
-    entity = await client.get_entity(bot_username)
+def find_bot_match(username: str | None) -> str | None:
+    """Returns the configured name (e.g. '@UltrawalletTrade_Bot') for a Telegram username, if tracked."""
+    if not username:
+        return None
+    u = username.lower()
+    for b in DYNAMIC_CONFIG.get("active_bots", []):
+        if b.lstrip("@").lower() == u:
+            return b
+    return None
+
+
+async def probe_bot(client: TelegramClient, entity) -> None:
+    """Optional: sends STATUS_COMMAND and waits briefly for an answer."""
     sent = await client.send_message(entity, STATUS_COMMAND)
     deadline = time.monotonic() + REPLY_TIMEOUT
     while time.monotonic() < deadline:
         await asyncio.sleep(2)
         msgs = await client.get_messages(entity, min_id=sent.id, limit=10)
         if any(not m.out for m in msgs):
-            await asyncio.sleep(2)  # some bots reply in several messages
-            msgs = await client.get_messages(entity, min_id=sent.id, limit=10)
-            return [m for m in reversed(msgs) if not m.out]
-    return []
+            await asyncio.sleep(2)  # let multi-message replies finish
+            return
 
 
-async def check_one_bot(client: TelegramClient, account_label: str, bot_username: str) -> dict:
-    replies = await fetch_bot_replies(client, bot_username)
-    combined = "\n".join(m.message for m in replies if m.message)
-    status = "NO REPLY" if not replies else classify_reply(combined)
+async def handle_bot_messages(account_label: str, bot_username: str, incoming: list) -> dict:
+    """incoming = messages FROM the mining bot, newest first. Updates status and alerts on new ready messages."""
+    if not incoming:
+        record = {"status": "NO MESSAGES", "last_response": "", "button_url": None,
+                  "timestamp": time.time(), "message_time": None}
+        MINING_STATUS_STORE.setdefault(account_label, {})[bot_username] = record
+        return record
+
+    newest = next((m for m in incoming if m.message), incoming[0])
     record = {
-        "status": status,
-        "last_response": combined[:1000],
-        "button_url": extract_button_url(replies),
+        "status": classify_reply(newest.message or ""),
+        "last_response": (newest.message or "")[:1000],
+        "button_url": extract_button_url([newest]),
         "timestamp": time.time(),
+        "message_time": newest.date.timestamp() if newest.date else None,
     }
     MINING_STATUS_STORE.setdefault(account_label, {})[bot_username] = record
+
+    # Alert once per new "ready" message (survives restarts via LAST_ALERTED in the database).
+    ready_msg = next((m for m in incoming if m.message and classify_reply(m.message) == "READY TO CLAIM"), None)
+    if ready_msg:
+        key = f"{account_label}|{bot_username}"
+        if ready_msg.id > int(LAST_ALERTED.get(key, 0)):
+            LAST_ALERTED[key] = ready_msg.id
+            await save_state("last_alerted", LAST_ALERTED)
+            age = time.time() - ready_msg.date.timestamp() if ready_msg.date else 0
+            if age <= ALERT_MAX_AGE:
+                url = extract_button_url([ready_msg]) or f"https://t.me/{bot_username.lstrip('@')}"
+                await notify_owners(
+                    f"🚨 <b>MINING REWARD READY</b> [{h(account_label)}]\n\n"
+                    f"🤖 Bot: <code>{h(bot_username)}</code>\n"
+                    f"💬 {h((ready_msg.message or '')[:200])}",
+                    "🎯 Open & Claim", url,
+                )
     return record
 
 
+async def scan_bot(client: TelegramClient, account_label: str, bot_username: str) -> dict:
+    """Reads the latest messages the mining bot has sent (optionally probing it first)."""
+    entity = await client.get_entity(bot_username)
+    if STATUS_COMMAND:
+        await probe_bot(client, entity)
+    msgs = await client.get_messages(entity, limit=10)
+    incoming = [m for m in msgs if not m.out]  # newest first
+    return await handle_bot_messages(account_label, bot_username, incoming)
+
+
+def attach_live_listener(client: TelegramClient, account_label: str):
+    """Instant alerts: reacts the moment a tracked mining bot messages this account."""
+    @client.on(events.NewMessage(incoming=True))
+    async def _on_bot_message(event):
+        if not event.is_private or not DYNAMIC_CONFIG.get("auto_claim_enabled", True):
+            return
+        try:
+            sender = await event.get_sender()
+            if not getattr(sender, "bot", False):
+                return
+            bot_username = find_bot_match(getattr(sender, "username", None))
+            if not bot_username:
+                return
+            record = await handle_bot_messages(account_label, bot_username, [event.message])
+            print(f"[live] [{account_label}] {bot_username}: {record['status']}")
+            await save_state("mining_status", MINING_STATUS_STORE)
+        except Exception as e:
+            print(f"[!] [{account_label}] Live listener error: {e}")
+
+
 async def radar_loop(client: TelegramClient, account_label: str):
-    print(f"[+] Mini-App Radar started for [{account_label}]")
+    print(f"[+] Mini-App Radar started for [{account_label}] "
+          f"({'probing with ' + STATUS_COMMAND if STATUS_COMMAND else 'listening mode'})")
     await asyncio.sleep(10)
-    last_state = {}
     session_dead_notified = False
 
     while True:
@@ -411,27 +478,14 @@ async def radar_loop(client: TelegramClient, account_label: str):
 
             for bot_username in list(DYNAMIC_CONFIG.get("active_bots", [])):
                 try:
-                    record = await check_one_bot(client, account_label, bot_username)
+                    record = await scan_bot(client, account_label, bot_username)
                     print(f"[*] [{account_label}] {bot_username}: {record['status']}")
-
-                    if record["status"] == "READY TO CLAIM":
-                        if last_state.get(bot_username) != "READY TO CLAIM":
-                            url = record.get("button_url") or f"https://t.me/{bot_username.lstrip('@')}"
-                            await notify_owners(
-                                f"🚨 <b>MINING REWARD READY</b> [{h(account_label)}]\n\n"
-                                f"🤖 Bot: <code>{h(bot_username)}</code>\n"
-                                "⚡ Cycle complete. Tap below to open and claim.",
-                                "🎯 Open & Claim", url,
-                            )
-                    last_state[bot_username] = record["status"]
-
                 except FloodWaitError as e:
                     print(f"[!] [{account_label}] Flood wait {e.seconds}s from Telegram — pausing.")
                     await asyncio.sleep(e.seconds + 5)
                 except Exception as e:
                     print(f"[-] [{account_label}] Error checking {bot_username}: {e}")
-
-                await asyncio.sleep(random.uniform(4, 10))  # human-like gap between bots
+                await asyncio.sleep(random.uniform(2, 5))
 
             await save_state("mining_status", MINING_STATUS_STORE)
 
@@ -756,6 +810,7 @@ async def start_services():
                     await client.disconnect()
                     continue
                 TELETHON_CLIENTS[idx] = client
+                attach_live_listener(client, label)
                 BACKGROUND_TASKS.append(asyncio.create_task(radar_loop(client, label)))
             except Exception as e:
                 print(f"[!] Failed to start {label}: {e}")
@@ -883,7 +938,7 @@ async def trigger_dashboard_action(account_id: int, action_type: str, auth=Depen
     results = {}
     for bot_username in list(DYNAMIC_CONFIG.get("active_bots", [])):
         try:
-            results[bot_username] = (await check_one_bot(client, label, bot_username))["status"]
+            results[bot_username] = (await scan_bot(client, label, bot_username))["status"]
         except Exception as e:
             results[bot_username] = f"error: {e}"
         await asyncio.sleep(random.uniform(2, 5))
