@@ -86,8 +86,11 @@ PASS_DAYS = 30
 PASS_PAYLOAD = "monthly_subscription_pass"
 
 DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///cloud_bot.db").strip()
-if DATABASE_URL.startswith("postgres://"):  # Render/Heroku style URL -> SQLAlchemy style
-    DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
+# Tell SQLAlchemy to use the psycopg2 driver we install (SQLAlchemy 2.1+ otherwise looks for "psycopg" v3).
+for _prefix in ("postgres://", "postgresql://"):
+    if DATABASE_URL.startswith(_prefix):
+        DATABASE_URL = "postgresql+psycopg2://" + DATABASE_URL[len(_prefix):]
+        break
 
 DEFAULT_CONFIG = {
     "polling_interval": 900,          # seconds between full radar sweeps
