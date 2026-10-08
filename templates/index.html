@@ -327,7 +327,8 @@
     "READY TO CLAIM": { cls: "ready", label: "Ready to claim" },
     "MINING IN PROGRESS": { cls: "mining", label: "Mining" },
     "NO REPLY": { cls: "bad", label: "No reply" },
-    "UNKNOWN": { cls: "bad", label: "Unclear reply" },
+    "UNKNOWN": { cls: "bad", label: "Unclear message" },
+    "NO MESSAGES": { cls: "bad", label: "No messages yet" },
   };
   const statusInfo = (s) => STATUS[s] || { cls: "bad", label: s || "Unknown" };
 
@@ -413,10 +414,10 @@
 
         const reply = info.last_response
           ? el("details", { class: "reply" }, [
-              el("summary", { text: "Last reply" }),
+              el("summary", { text: "Latest message" }),
               el("pre", { text: info.last_response }),
             ])
-          : el("span", { class: "hint", text: "No text in reply" });
+          : el("span", { class: "hint", text: "No text in latest message" });
 
         list.appendChild(el("div", { class: "row" }, [
           el("div", { class: "row-main" }, [
@@ -424,7 +425,9 @@
             el("span", { class: "status " + st.cls, text: st.label }),
           ]),
           el("div", { class: "row-meta" }, [
-            el("span", { class: "hint", text: `Checked ${timeAgo(info.timestamp)}` }),
+            el("span", { class: "hint", text: info.message_time
+              ? `Bot messaged ${timeAgo(info.message_time)} · checked ${timeAgo(info.timestamp)}`
+              : `Checked ${timeAgo(info.timestamp)}` }),
             actions,
           ]),
           el("div", { style: "margin-top:6px" }, [reply]),
