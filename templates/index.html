@@ -243,6 +243,10 @@
           <span class="hint">One username per line, e.g. @UltrawalletTrade_Bot</span>
           <textarea id="bots" spellcheck="false"></textarea>
         </label>
+        <label class="field">Cycle timers
+          <span class="hint">For bots that never message you. One per line: bot = hours, e.g. @ATF_AIRDROP_bot = 8. Leave a bot out to read its messages instead.</span>
+          <textarea id="cycleTimers" spellcheck="false" placeholder="@ATF_AIRDROP_bot = 8&#10;@mrgminerbot = 24"></textarea>
+        </label>
         <label class="field">Words that mean "ready"
           <span class="hint">Comma separated. If a bot's reply contains one of these, you get an alert.</span>
           <input type="text" id="readyWords" spellcheck="false">
@@ -327,6 +331,12 @@
       : "Open this dashboard from your bot with /dashboard, or enter your dashboard API key.";
   }
 
+  function timeUntil(ts) {
+    const s = Math.max(0, Math.floor(ts - Date.now() / 1000));
+    const hrs = Math.floor(s / 3600), mins = Math.floor((s % 3600) / 60);
+    return hrs ? `${hrs}h ${mins}m` : `${Math.max(mins, 1)} min`;
+  }
+
   function timeAgo(ts) {
     const s = Math.max(0, Math.floor(Date.now() / 1000 - ts));
     if (s < 60) return "just now";
@@ -342,6 +352,7 @@
     "UNKNOWN": { cls: "bad", label: "Unclear message" },
     "NO MESSAGES": { cls: "bad", label: "No messages yet" },
     "CLAIMED": { cls: "done", label: "Claimed" },
+    "TIMER NOT STARTED": { cls: "bad", label: "Timer not started" },
     "STALE READY": { cls: "mining", label: "Old ready message" },
   };
   const statusInfo = (s) => STATUS[s] || { cls: "bad", label: s || "Unknown" };
@@ -425,14 +436,17 @@
         const openBtn = st.cls === "ready"
           ? el("button", { class: "btn small claim", text: "Open & claim", onclick: () => openLink(claimUrl) })
           : el("button", { class: "btn small quiet", text: "Open bot", onclick: () => openLink(claimUrl) });
-        const canMark = info.status === "READY TO CLAIM" || info.status === "STALE READY";
+        const isTimer = info.mode === "timer";
+        const canMark = isTimer || info.status === "READY TO CLAIM" || info.status === "STALE READY";
         const markBtn = canMark
-          ? el("button", { class: "btn small quiet", text: "Mark claimed" })
+          ? el("button", { class: "btn small quiet", text: isTimer ? "Claimed now" : "Mark claimed" })
           : null;
         if (markBtn) markBtn.addEventListener("click", () => markClaimed(label, botName, markBtn));
         const actions = el("div", { class: "row-actions" }, [markBtn, openBtn]);
 
-        const reply = info.last_response
+        const reply = isTimer
+          ? null
+          : info.last_response
           ? el("details", { class: "reply" }, [
               el("summary", { text: "Latest message" }),
               el("pre", { text: info.last_response }),
@@ -445,9 +459,7 @@
             el("span", { class: "status " + st.cls, text: st.label }),
           ]),
           el("div", { class: "row-meta" }, [
-            el("span", { class: "hint", text: info.message_time
-              ? `Bot messaged ${timeAgo(info.message_time)} · checked ${timeAgo(info.timestamp)}`
-              : `Checked ${timeAgo(info.timestamp)}` }),
+            el("span", { class: "hint", text: metaText(info) }),
             actions,
           ]),
           el("div", { style: "margin-top:6px" }, [reply]),
@@ -461,6 +473,17 @@
     });
   }
 
+  function metaText(info) {
+    if (info.mode === "timer") {
+      if (!info.claimed_at) return `${info.cycle_hours}h timer · tap "Claimed now" after you claim`;
+      if (info.status === "READY TO CLAIM") return `Ready since ${timeAgo(info.ready_at)}`;
+      return `Ready in ${timeUntil(info.ready_at)} · ${info.cycle_hours}h cycle`;
+    }
+    return info.message_time
+      ? `Bot messaged ${timeAgo(info.message_time)} · checked ${timeAgo(info.timestamp)}`
+      : `Checked ${timeAgo(info.timestamp)}`;
+  }
+
   function fillSettings(s) {
     const interval = $("interval");
     const val = String(s.polling_interval);
@@ -470,6 +493,7 @@
     interval.value = val;
     $("bots").value = (s.active_bots || []).join("\n");
     $("readyWords").value = (s.ready_keywords || []).join(", ");
+    $("cycleTimers").value = Object.entries(s.cycle_hours || {}).map(([b, hrs]) => `${b} = ${hrs}`).join("\n");
     $("notReadyWords").value = (s.not_ready_keywords || []).join(", ");
     const rv = $("readyValid");
     const rvVal = String(Number(s.ready_valid_hours || 12));
@@ -551,6 +575,13 @@
     const splitWords = (v) => v.split(",").map((w) => w.trim()).filter(Boolean);
     const bots = $("bots").value.split(/[\n,]/).map((b) => b.trim()).filter(Boolean);
     if (!bots.length) { toast("Add at least one mining bot.", true); return; }
+    const cycles = {};
+    for (const line of $("cycleTimers").value.split("\n")) {
+      if (!line.trim()) continue;
+      const m = line.match(/^\s*@?([A-Za-z0-9_]+)\s*[=:]\s*([\d.]+)/);
+      if (!m) { toast(`Can't read timer line: "${line.trim()}"`, true); return; }
+      cycles["@" + m[1]] = Number(m[2]);
+    }
     btn.disabled = true;
     try {
       await saveSettings({
@@ -559,6 +590,7 @@
         ready_keywords: splitWords($("readyWords").value),
         not_ready_keywords: splitWords($("notReadyWords").value),
         ready_valid_hours: Number($("readyValid").value),
+        cycle_hours: cycles,
       }, "Settings saved");
       document.activeElement && document.activeElement.blur();
       load(true);
