@@ -92,6 +92,7 @@
   }
   .blip.ready { background: var(--ready); box-shadow: 0 0 0 4px color-mix(in srgb, var(--ready) 30%, transparent); }
   .blip.bad { background: var(--bad); }
+  .blip.done { background: var(--hint); }
   .radar-center {
     position: absolute; inset: 0; display: grid; place-items: center; z-index: 3; text-align: center;
   }
@@ -123,6 +124,8 @@
   .status.ready { color: var(--ready); }
   .status.mining { color: var(--mining); }
   .status.bad { color: var(--bad); }
+  .status.done { color: var(--hint); }
+  .row-actions { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; justify-content: flex-end; }
   .row-meta { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-top: 6px; }
   details.reply summary { cursor: pointer; color: var(--link); font-size: 13px; list-style: none; }
   details.reply summary::-webkit-details-marker { display: none; }
@@ -248,6 +251,15 @@
           <span class="hint">Comma separated. These win over the ready words. Countdowns like 17:35:17 are detected automatically.</span>
           <input type="text" id="notReadyWords" spellcheck="false">
         </label>
+        <label class="field">Treat "ready" messages as old after
+          <span class="hint">If you claim inside the app, the bot can't see it. After this long, an old "ready" message stops counting. Tap "Mark claimed" to clear it sooner.</span>
+          <select id="readyValid">
+            <option value="2">2 hours</option>
+            <option value="6">6 hours</option>
+            <option value="12">12 hours</option>
+            <option value="24">24 hours</option>
+          </select>
+        </label>
         <button class="btn" id="saveBtn">Save settings</button>
       </div>
     </section>
@@ -329,6 +341,8 @@
     "NO REPLY": { cls: "bad", label: "No reply" },
     "UNKNOWN": { cls: "bad", label: "Unclear message" },
     "NO MESSAGES": { cls: "bad", label: "No messages yet" },
+    "CLAIMED": { cls: "done", label: "Claimed" },
+    "STALE READY": { cls: "mining", label: "Old ready message" },
   };
   const statusInfo = (s) => STATUS[s] || { cls: "bad", label: s || "Unknown" };
 
@@ -372,7 +386,7 @@
       $("summaryTitle").textContent = "No checks yet";
       $("summaryLine").textContent = "The first scan runs a few seconds after the bot starts.";
     } else {
-      const mining = records.filter((r) => r.info.status === "MINING IN PROGRESS").length;
+      const mining = records.filter((r) => ["MINING IN PROGRESS", "CLAIMED", "STALE READY"].includes(r.info.status)).length;
       const problems = records.length - ready - mining;
       $("summaryTitle").textContent = ready ? `${ready} ready to claim` : "All bots mining";
       const parts = [`${mining} mining`];
@@ -408,9 +422,15 @@
         const st = statusInfo(info.status);
         const claimUrl = info.button_url || `https://t.me/${botName.replace(/^@/, "")}`;
 
-        const actions = st.cls === "ready"
+        const openBtn = st.cls === "ready"
           ? el("button", { class: "btn small claim", text: "Open & claim", onclick: () => openLink(claimUrl) })
           : el("button", { class: "btn small quiet", text: "Open bot", onclick: () => openLink(claimUrl) });
+        const canMark = info.status === "READY TO CLAIM" || info.status === "STALE READY";
+        const markBtn = canMark
+          ? el("button", { class: "btn small quiet", text: "Mark claimed" })
+          : null;
+        if (markBtn) markBtn.addEventListener("click", () => markClaimed(label, botName, markBtn));
+        const actions = el("div", { class: "row-actions" }, [markBtn, openBtn]);
 
         const reply = info.last_response
           ? el("details", { class: "reply" }, [
@@ -451,6 +471,10 @@
     $("bots").value = (s.active_bots || []).join("\n");
     $("readyWords").value = (s.ready_keywords || []).join(", ");
     $("notReadyWords").value = (s.not_ready_keywords || []).join(", ");
+    const rv = $("readyValid");
+    const rvVal = String(Number(s.ready_valid_hours || 12));
+    if (![...rv.options].some((o) => o.value === rvVal)) rv.appendChild(el("option", { value: rvVal, text: `${rvVal} hours` }));
+    rv.value = rvVal;
     $("radarToggle").checked = !!s.auto_claim_enabled;
     $("radarToggleLabel").textContent = s.auto_claim_enabled ? "Radar on" : "Radar paused";
   }
@@ -503,6 +527,18 @@
     }
   }
 
+  async function markClaimed(account, bot, btn) {
+    btn.disabled = true;
+    try {
+      await api("/api/mark-claimed", { method: "POST", body: JSON.stringify({ account, bot }) });
+      toast(`${bot} marked as claimed`);
+      await load(true);
+    } catch (e) {
+      toast(e.message, true);
+      btn.disabled = false;
+    }
+  }
+
   async function saveSettings(partial, successMsg) {
     const data = await api("/api/settings", { method: "POST", body: JSON.stringify(partial) });
     fillSettings(data.settings);
@@ -522,6 +558,7 @@
         active_bots: bots,
         ready_keywords: splitWords($("readyWords").value),
         not_ready_keywords: splitWords($("notReadyWords").value),
+        ready_valid_hours: Number($("readyValid").value),
       }, "Settings saved");
       document.activeElement && document.activeElement.blur();
       load(true);
