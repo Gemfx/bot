@@ -43,7 +43,7 @@ from telegram import (
 from telegram.constants import ParseMode
 from telegram.ext import (
     ApplicationBuilder, CommandHandler, ContextTypes,
-    PreCheckoutQueryHandler, MessageHandler, filters,
+    PreCheckoutQueryHandler, MessageHandler, CallbackQueryHandler, filters,
 )
 from telegram.request import HTTPXRequest
 
@@ -102,6 +102,7 @@ DEFAULT_CONFIG = {
     "active_bots": list(ENV_BOTS),
     "ready_keywords": ["ready to claim", "ready", "claim available", "harvest", "complete", "limit reached"],
     "not_ready_keywords": ["remaining", "hrs", "mins", "come back", "next claim in"],
+    "ready_valid_hours": 12,   # after this, an unclaimed "ready" message is treated as old
 }
 TIMER_PATTERN = re.compile(r"\b\d{1,2}:\d{2}:\d{2}\b")  # e.g. 17:35:17
 
@@ -116,6 +117,7 @@ TICKER_MAP = {
 # =====================================================================
 DYNAMIC_CONFIG = dict(DEFAULT_CONFIG)
 MINING_STATUS_STORE = {}
+CLAIMED_MARKS = {}       # {"Account-1|@bot": message id you marked as claimed}
 LAST_ALERTED = {}        # {"Account-1|@bot": last alerted message id}
 ACTIVE_ALERTS = []
 TG_APP = None
@@ -210,7 +212,7 @@ def get_subscription_expiry(user_id: int) -> float | None:
 
 
 def load_state_sync():
-    global DYNAMIC_CONFIG, MINING_STATUS_STORE, ACTIVE_ALERTS, LAST_ALERTED
+    global DYNAMIC_CONFIG, MINING_STATUS_STORE, ACTIVE_ALERTS, LAST_ALERTED, CLAIMED_MARKS
     cfg = dict(DEFAULT_CONFIG)
     cfg.update(kv_get("config", {}) or {})
 
@@ -225,6 +227,7 @@ def load_state_sync():
     MINING_STATUS_STORE = kv_get("mining_status", {}) or {}
     ACTIVE_ALERTS = kv_get("price_alerts", []) or []
     LAST_ALERTED = kv_get("last_alerted", {}) or {}
+    CLAIMED_MARKS = kv_get("claimed_marks", {}) or {}
 
 
 def fmt_time(ts: float) -> str:
@@ -312,13 +315,17 @@ def analyze_market_trend(symbol: str) -> str:
 # =====================================================================
 # NOTIFICATIONS (always sent by the real bot, never the userbot)
 # =====================================================================
-async def notify_owners(message_html: str, button_text: str | None = None, button_url: str | None = None):
+async def notify_owners(message_html: str, button_text: str | None = None, button_url: str | None = None,
+                        claimed_key: str | None = None):
     if not TG_APP or not ALLOWED_USERS:
         print("[!] Cannot notify: bot not started or ALLOWED_USERS is empty.")
         return
-    markup = None
+    rows = []
     if button_text and button_url:
-        markup = InlineKeyboardMarkup([[InlineKeyboardButton(button_text, url=button_url)]])
+        rows.append([InlineKeyboardButton(button_text, url=button_url)])
+    if claimed_key and len(f"claimed|{claimed_key}".encode()) <= 64:
+        rows.append([InlineKeyboardButton("✅ I've claimed it", callback_data=f"claimed|{claimed_key}")])
+    markup = InlineKeyboardMarkup(rows) if rows else None
     for uid in ALLOWED_USERS:
         try:
             await TG_APP.bot.send_message(
@@ -393,8 +400,17 @@ async def handle_bot_messages(account_label: str, bot_username: str, incoming: l
         return record
 
     newest = next((m for m in incoming if m.message), incoming[0])
+    key = f"{account_label}|{bot_username}"
+    status = classify_reply(newest.message or "")
+    if status == "READY TO CLAIM":
+        age = time.time() - newest.date.timestamp() if newest.date else 0
+        if newest.id <= int(CLAIMED_MARKS.get(key, 0)):
+            status = "CLAIMED"
+        elif age > float(DYNAMIC_CONFIG.get("ready_valid_hours", 12)) * 3600:
+            status = "STALE READY"
     record = {
-        "status": classify_reply(newest.message or ""),
+        "status": status,
+        "message_id": newest.id,
         "last_response": (newest.message or "")[:1000],
         "button_url": extract_button_url([newest]),
         "timestamp": time.time(),
@@ -404,8 +420,7 @@ async def handle_bot_messages(account_label: str, bot_username: str, incoming: l
 
     # Alert once per new "ready" message (survives restarts via LAST_ALERTED in the database).
     ready_msg = next((m for m in incoming if m.message and classify_reply(m.message) == "READY TO CLAIM"), None)
-    if ready_msg:
-        key = f"{account_label}|{bot_username}"
+    if ready_msg and ready_msg.id > int(CLAIMED_MARKS.get(key, 0)):
         if ready_msg.id > int(LAST_ALERTED.get(key, 0)):
             LAST_ALERTED[key] = ready_msg.id
             await save_state("last_alerted", LAST_ALERTED)
@@ -416,8 +431,23 @@ async def handle_bot_messages(account_label: str, bot_username: str, incoming: l
                     f"🚨 <b>MINING REWARD READY</b> [{h(account_label)}]\n\n"
                     f"🤖 Bot: <code>{h(bot_username)}</code>\n"
                     f"💬 {h((ready_msg.message or '')[:200])}",
-                    "🎯 Open & Claim", url,
+                    "🎯 Open & Claim", url, claimed_key=key,
                 )
+    return record
+
+
+async def mark_claimed(account_label: str, bot_username: str) -> dict | None:
+    """Remembers that the latest ready message was claimed, so it stops showing as ready."""
+    key = f"{account_label}|{bot_username}"
+    record = MINING_STATUS_STORE.get(account_label, {}).get(bot_username)
+    msg_id = max(int((record or {}).get("message_id") or 0), int(LAST_ALERTED.get(key, 0)))
+    if not msg_id:
+        return record
+    CLAIMED_MARKS[key] = msg_id
+    if record and record.get("status") in ("READY TO CLAIM", "STALE READY"):
+        record["status"] = "CLAIMED"
+    await save_state("claimed_marks", CLAIMED_MARKS)
+    await save_state("mining_status", MINING_STATUS_STORE)
     return record
 
 
@@ -426,8 +456,13 @@ async def scan_bot(client: TelegramClient, account_label: str, bot_username: str
     entity = await client.get_entity(bot_username)
     if STATUS_COMMAND:
         await probe_bot(client, entity)
-    msgs = await client.get_messages(entity, limit=10)
-    incoming = [m for m in msgs if not m.out]  # newest first
+    try:
+        msgs = await client.get_messages(entity, limit=10, from_user=entity)
+    except Exception:
+        msgs = []
+    if not msgs:  # fallback: look further back, skipping our own messages
+        msgs = await client.get_messages(entity, limit=200)
+    incoming = [m for m in msgs if not m.out][:10]  # newest first
     return await handle_bot_messages(account_label, bot_username, incoming)
 
 
@@ -710,6 +745,21 @@ async def tg_ai(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await msg.edit_text(clip(answer))
 
 
+async def claimed_button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    if ALLOWED_USERS and str(query.from_user.id) not in ALLOWED_USERS:
+        await query.answer()
+        return
+    try:
+        _, account_label, bot_username = query.data.split("|", 2)
+        await mark_claimed(account_label, bot_username)
+        await query.answer("Marked as claimed ✅")
+        await query.edit_message_reply_markup(reply_markup=None)
+    except Exception as e:
+        print(f"[!] Claimed button error: {e}")
+        await query.answer("Couldn't update. Try from the dashboard.")
+
+
 # =====================================================================
 # DASHBOARD API AUTH
 # =====================================================================
@@ -772,6 +822,7 @@ async def start_services():
     for name, handler in handlers.items():
         TG_APP.add_handler(CommandHandler(name, handler))
     TG_APP.add_handler(PreCheckoutQueryHandler(pre_checkout_handler))
+    TG_APP.add_handler(CallbackQueryHandler(claimed_button_handler, pattern=r"^claimed\|"))
     TG_APP.add_handler(MessageHandler(filters.SUCCESSFUL_PAYMENT, successful_payment_handler))
 
     await TG_APP.initialize()
@@ -900,6 +951,8 @@ async def update_settings(payload: dict, auth=Depends(require_auth)):
                     bots.append(b if b.startswith("@") else f"@{b}")
             if bots:
                 DYNAMIC_CONFIG["active_bots"] = bots
+        if "ready_valid_hours" in payload:
+            DYNAMIC_CONFIG["ready_valid_hours"] = min(168, max(1, float(payload["ready_valid_hours"])))
         for key in ("ready_keywords", "not_ready_keywords"):
             if isinstance(payload.get(key), list):
                 DYNAMIC_CONFIG[key] = [str(k).strip().lower() for k in payload[key] if str(k).strip()]
@@ -924,6 +977,16 @@ async def create_invoice(auth=Depends(require_auth)):
         return {"status": "success", "invoice_link": link}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@api_app.post("/api/mark-claimed")
+async def api_mark_claimed(payload: dict, auth=Depends(require_auth)):
+    account_label = str(payload.get("account", ""))
+    bot_username = str(payload.get("bot", ""))
+    if bot_username not in MINING_STATUS_STORE.get(account_label, {}):
+        raise HTTPException(status_code=404, detail="Unknown account or bot.")
+    record = await mark_claimed(account_label, bot_username)
+    return {"status": "success", "record": record}
 
 
 @api_app.post("/api/action/{account_id}/{action_type}")
