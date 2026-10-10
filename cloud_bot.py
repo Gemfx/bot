@@ -103,6 +103,7 @@ DEFAULT_CONFIG = {
     "ready_keywords": ["ready to claim", "ready", "claim available", "harvest", "complete", "limit reached"],
     "not_ready_keywords": ["remaining", "hrs", "mins", "come back", "next claim in"],
     "ready_valid_hours": 12,   # after this, an unclaimed "ready" message is treated as old
+    "cycle_hours": {},         # {"@ATF_AIRDROP_bot": 8} -> timer mode for bots that never message you
 }
 TIMER_PATTERN = re.compile(r"\b\d{1,2}:\d{2}:\d{2}\b")  # e.g. 17:35:17
 
@@ -118,6 +119,8 @@ TICKER_MAP = {
 DYNAMIC_CONFIG = dict(DEFAULT_CONFIG)
 MINING_STATUS_STORE = {}
 CLAIMED_MARKS = {}       # {"Account-1|@bot": message id you marked as claimed}
+CLAIM_TIMES = {}         # {"Account-1|@bot": unix time you last claimed}
+TIMER_ALERTED = {}       # {"Account-1|@bot": claim time already alerted for}
 LAST_ALERTED = {}        # {"Account-1|@bot": last alerted message id}
 ACTIVE_ALERTS = []
 TG_APP = None
@@ -212,7 +215,7 @@ def get_subscription_expiry(user_id: int) -> float | None:
 
 
 def load_state_sync():
-    global DYNAMIC_CONFIG, MINING_STATUS_STORE, ACTIVE_ALERTS, LAST_ALERTED, CLAIMED_MARKS
+    global DYNAMIC_CONFIG, MINING_STATUS_STORE, ACTIVE_ALERTS, LAST_ALERTED, CLAIMED_MARKS, CLAIM_TIMES, TIMER_ALERTED
     cfg = dict(DEFAULT_CONFIG)
     cfg.update(kv_get("config", {}) or {})
 
@@ -228,6 +231,8 @@ def load_state_sync():
     ACTIVE_ALERTS = kv_get("price_alerts", []) or []
     LAST_ALERTED = kv_get("last_alerted", {}) or {}
     CLAIMED_MARKS = kv_get("claimed_marks", {}) or {}
+    CLAIM_TIMES = kv_get("claim_times", {}) or {}
+    TIMER_ALERTED = kv_get("timer_alerted", {}) or {}
 
 
 def fmt_time(ts: float) -> str:
@@ -436,18 +441,82 @@ async def handle_bot_messages(account_label: str, bot_username: str, incoming: l
     return record
 
 
-async def mark_claimed(account_label: str, bot_username: str) -> dict | None:
-    """Remembers that the latest ready message was claimed, so it stops showing as ready."""
+def cycle_hours_for(bot_username: str) -> float | None:
+    """Returns the cycle length if this bot is in timer mode."""
+    for name, hours in (DYNAMIC_CONFIG.get("cycle_hours") or {}).items():
+        if name.lstrip("@").lower() == bot_username.lstrip("@").lower():
+            try:
+                return float(hours) if float(hours) > 0 else None
+            except (TypeError, ValueError):
+                return None
+    return None
+
+
+async def update_timer_bot(account_label: str, bot_username: str, hours: float) -> dict:
+    """Timer mode: works out the status from when you last claimed + the cycle length."""
     key = f"{account_label}|{bot_username}"
+    now = time.time()
+    last = CLAIM_TIMES.get(key)
+    old = MINING_STATUS_STORE.get(account_label, {}).get(bot_username) or {}
+    record = {
+        "mode": "timer", "cycle_hours": hours, "last_response": "", "button_url": None,
+        "timestamp": now, "message_time": None, "claimed_at": last, "ready_at": None,
+    }
+    if not last:
+        record["status"] = "TIMER NOT STARTED"
+    else:
+        record["ready_at"] = last + hours * 3600
+        record["status"] = "READY TO CLAIM" if now >= record["ready_at"] else "MINING IN PROGRESS"
+        if record["status"] == "READY TO CLAIM" and TIMER_ALERTED.get(key) != last:
+            TIMER_ALERTED[key] = last
+            await save_state("timer_alerted", TIMER_ALERTED)
+            await notify_owners(
+                f"⏰ <b>MINING CYCLE FINISHED</b> [{h(account_label)}]\n\n"
+                f"🤖 Bot: <code>{h(bot_username)}</code>\n"
+                f"It's been {hours:g}h since you last claimed.",
+                "🎯 Open & Claim", f"https://t.me/{bot_username.lstrip('@')}", claimed_key=key,
+            )
+    MINING_STATUS_STORE.setdefault(account_label, {})[bot_username] = record
+    if old.get("status") != record["status"]:
+        await save_state("mining_status", MINING_STATUS_STORE)
+    return record
+
+
+async def timer_loop():
+    """Checks timer-mode bots every minute so alerts arrive on time."""
+    while True:
+        try:
+            for idx in list(TELETHON_CLIENTS):
+                label = f"Account-{idx}"
+                for bot_username in list(DYNAMIC_CONFIG.get("active_bots", [])):
+                    hours = cycle_hours_for(bot_username)
+                    if hours:
+                        await update_timer_bot(label, bot_username, hours)
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            print(f"[!] Timer loop error: {e}")
+        await asyncio.sleep(60)
+
+
+async def mark_claimed(account_label: str, bot_username: str) -> dict | None:
+    """Records that you just claimed: starts the timer and clears any 'ready' message."""
+    key = f"{account_label}|{bot_username}"
+    CLAIM_TIMES[key] = time.time()
+    await save_state("claim_times", CLAIM_TIMES)
+
+    hours = cycle_hours_for(bot_username)
+    if hours:
+        return await update_timer_bot(account_label, bot_username, hours)
+
     record = MINING_STATUS_STORE.get(account_label, {}).get(bot_username)
     msg_id = max(int((record or {}).get("message_id") or 0), int(LAST_ALERTED.get(key, 0)))
-    if not msg_id:
-        return record
-    CLAIMED_MARKS[key] = msg_id
+    if msg_id:
+        CLAIMED_MARKS[key] = msg_id
+        await save_state("claimed_marks", CLAIMED_MARKS)
     if record and record.get("status") in ("READY TO CLAIM", "STALE READY"):
         record["status"] = "CLAIMED"
-    await save_state("claimed_marks", CLAIMED_MARKS)
-    await save_state("mining_status", MINING_STATUS_STORE)
+        await save_state("mining_status", MINING_STATUS_STORE)
     return record
 
 
@@ -477,7 +546,7 @@ def attach_live_listener(client: TelegramClient, account_label: str):
             if not getattr(sender, "bot", False):
                 return
             bot_username = find_bot_match(getattr(sender, "username", None))
-            if not bot_username:
+            if not bot_username or cycle_hours_for(bot_username):
                 return
             record = await handle_bot_messages(account_label, bot_username, [event.message])
             print(f"[live] [{account_label}] {bot_username}: {record['status']}")
@@ -512,6 +581,10 @@ async def radar_loop(client: TelegramClient, account_label: str):
             session_dead_notified = False
 
             for bot_username in list(DYNAMIC_CONFIG.get("active_bots", [])):
+                hours = cycle_hours_for(bot_username)
+                if hours:
+                    await update_timer_bot(account_label, bot_username, hours)
+                    continue
                 try:
                     record = await scan_bot(client, account_label, bot_username)
                     print(f"[*] [{account_label}] {bot_username}: {record['status']}")
@@ -842,6 +915,7 @@ async def start_services():
     BACKGROUND_TASKS.extend([
         asyncio.create_task(price_alerts_loop()),
         asyncio.create_task(daily_report_loop()),
+        asyncio.create_task(timer_loop()),
     ])
 
     if not (TELEGRAM_API_ID and TELEGRAM_API_HASH):
@@ -951,6 +1025,17 @@ async def update_settings(payload: dict, auth=Depends(require_auth)):
                     bots.append(b if b.startswith("@") else f"@{b}")
             if bots:
                 DYNAMIC_CONFIG["active_bots"] = bots
+        if isinstance(payload.get("cycle_hours"), dict):
+            cycles = {}
+            for name, hours in payload["cycle_hours"].items():
+                name = str(name).strip()
+                if not name:
+                    continue
+                name = name if name.startswith("@") else f"@{name}"
+                hrs = float(hours)
+                if 0 < hrs <= 168:
+                    cycles[name] = hrs
+            DYNAMIC_CONFIG["cycle_hours"] = cycles
         if "ready_valid_hours" in payload:
             DYNAMIC_CONFIG["ready_valid_hours"] = min(168, max(1, float(payload["ready_valid_hours"])))
         for key in ("ready_keywords", "not_ready_keywords"):
@@ -1001,7 +1086,10 @@ async def trigger_dashboard_action(account_id: int, action_type: str, auth=Depen
     results = {}
     for bot_username in list(DYNAMIC_CONFIG.get("active_bots", [])):
         try:
-            results[bot_username] = (await scan_bot(client, label, bot_username))["status"]
+            hours = cycle_hours_for(bot_username)
+            rec = (await update_timer_bot(label, bot_username, hours)) if hours \
+                else (await scan_bot(client, label, bot_username))
+            results[bot_username] = rec["status"]
         except Exception as e:
             results[bot_username] = f"error: {e}"
         await asyncio.sleep(random.uniform(2, 5))
