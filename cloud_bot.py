@@ -5,23 +5,15 @@ import time
 import asyncio
 from datetime import timedelta
 from urllib.parse import urlparse
-import ssl
-import socket
 
 from dotenv import load_dotenv
-import psutil
 import requests
-from bs4 import BeautifulSoup
-import yt_dlp
 
 from telegram import Update, BotCommand, InlineKeyboardButton, InlineKeyboardMarkup, LabeledPrice
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes, PreCheckoutQueryHandler, MessageHandler, filters
 from telegram.request import HTTPXRequest
 
-import discord
-from discord.ext import commands as discord_commands
-
-from google import genai
+from openai import OpenAI
 from telethon import TelegramClient
 from telethon.sessions import StringSession
 
@@ -34,8 +26,7 @@ import uvicorn
 load_dotenv()
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "").strip()
-DISCORD_TOKEN = os.getenv("DISCORD_TOKEN", "").strip()
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "").strip()
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "").strip()
 ALLOWED_USERS_RAW = os.getenv("ALLOWED_USERS", "")
 ALLOWED_USERS = [x.strip() for x in ALLOWED_USERS_RAW.split(",") if x.strip()]
 
@@ -93,29 +84,22 @@ def fetch_pair_price(symbol: str, asset_type: str = "crypto") -> float | None:
         print(f"[!] Price fetch error: {e}")
     return None
 
-# --- RESILIENT AI CALL WITH 503 FALLBACK ---
+# --- GENERAL AI HELPER (Powered by OpenAI GPT-4o-mini) ---
 def generate_ai_response(prompt: str) -> str:
     try:
-        if not GEMINI_API_KEY:
-            return "Error: GEMINI_API_KEY is missing."
-        client = genai.Client(api_key=GEMINI_API_KEY)
-        try:
-            response = client.models.generate_content(
-                model="gemini-3.8-flash",
-                contents=prompt,
-            )
-            return response.text
-        except Exception as primary_err:
-            print(f"[!] Primary model busy (503), falling back to gemini-2.5-flash: {primary_err}")
-            response = client.models.generate_content(
-                model="gemini-2.5-flash",
-                contents=prompt,
-            )
-            return response.text
+        if not OPENAI_API_KEY:
+            return "Error: OPENAI_API_KEY is missing."
+        client = OpenAI(api_key=OPENAI_API_KEY)
+        response = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=800
+        )
+        return response.choices[0].message.content
     except Exception as e:
-        return f"AI Error: {str(e)}"
+        return f"OpenAI Error: {str(e)}"
 
-# --- MULTI-TURN WEB & MINI-APP CODE GENERATOR WITH FALLBACK ---
+# --- WEB & MINI-APP BUILDER (Powered by OpenAI GPT-4o) ---
 def extract_clean_html(raw_text: str) -> str:
     match = re.search(r"```(?:html)?\s*(.*?)```", raw_text, re.DOTALL | re.IGNORECASE)
     if match:
@@ -123,10 +107,10 @@ def extract_clean_html(raw_text: str) -> str:
     return raw_text.strip()
 
 def build_or_update_webapp(prompt: str, existing_html: str | None = None) -> str:
-    if not GEMINI_API_KEY:
-        raise ValueError("GEMINI_API_KEY is missing in environment variables.")
+    if not OPENAI_API_KEY:
+        raise ValueError("OPENAI_API_KEY is missing in environment variables.")
 
-    client = genai.Client(api_key=GEMINI_API_KEY)
+    client = OpenAI(api_key=OPENAI_API_KEY)
 
     if not existing_html:
         system_prompt = (
@@ -149,40 +133,12 @@ def build_or_update_webapp(prompt: str, existing_html: str | None = None) -> str
             f"Current HTML Code:\n{existing_html}"
         )
 
-    try:
-        response = client.models.generate_content(
-            model="gemini-3.8-flash",
-            contents=system_prompt,
-        )
-        return extract_clean_html(response.text)
-    except Exception as e:
-        print(f"[!] Primary model 503 error during build, falling back to gemini-2.5-flash: {e}")
-        response = client.models.generate_content(
-            model="gemini-2.5-flash",
-            contents=system_prompt,
-        )
-        return extract_clean_html(response.text)
-# -------------------------------------------------
-
-async def analyze_mining_screenshot_with_ai(image_bytes: bytes, bot_name: str) -> str:
-    try:
-        if not GEMINI_API_KEY:
-            return "AI Vision Key Missing"
-        client = genai.Client(api_key=GEMINI_API_KEY)
-        try:
-            response = client.models.generate_content(
-                model="gemini-3.8-flash",
-                contents=[image_bytes, f"Analyze UI for {bot_name}. Is claim active? YES/NO. Keep under 30 words."]
-            )
-            return response.text
-        except Exception:
-            response = client.models.generate_content(
-                model="gemini-2.5-flash",
-                contents=[image_bytes, f"Analyze UI for {bot_name}. Is claim active? YES/NO. Keep under 30 words."]
-            )
-            return response.text
-    except Exception as e:
-        return f"Vision Error: {str(e)}"
+    response = client.chat.completions.create(
+        model="gpt-4o",
+        messages=[{"role": "user", "content": system_prompt}],
+        max_tokens=4000
+    )
+    return extract_clean_html(response.choices[0].message.content)
 
 def analyze_market_trend(symbol: str) -> str:
     symbol_clean = TICKER_MAP.get(symbol.lower().strip(), symbol.lower().strip())
@@ -219,82 +175,6 @@ def analyze_market_trend(symbol: str) -> str:
         return generate_ai_response(prompt)
     except Exception as e:
         return f"Analysis error: {str(e)}"
-
-async def check_price_alerts_loop(tg_app, discord_bot):
-    global ACTIVE_ALERTS
-    while True:
-        await asyncio.sleep(30)
-        if not ACTIVE_ALERTS:
-            continue
-         
-        triggered_alerts = []
-        for alert in list(ACTIVE_ALERTS):
-            current_price = await asyncio.to_thread(fetch_pair_price, alert["symbol"], alert["type"])
-            if current_price is None:
-                continue
-
-            hit = False
-            if alert["condition"] == "above" and current_price >= alert["target_price"]:
-                hit = True
-            elif alert["condition"] == "below" and current_price <= alert["target_price"]:
-                hit = True
-
-            if hit:
-                msg = (
-                    f"🚨 **PRICE ALERT TRIGGERED!** 🚨\n\n"
-                    f"📈 **Asset:** {alert['symbol'].upper()}\n"
-                    f"🎯 **Target:** ${alert['target_price']:,.4f}\n"
-                    f"💵 **Current:** ${current_price:,.4f}"
-                )
-                try:
-                    if alert["platform"] == "telegram":
-                        await tg_app.bot.send_message(chat_id=alert["channel_id"], text=msg, parse_mode="Markdown")
-                except Exception as e:
-                    print(f"[!] Notification error: {e}")
-                 
-                triggered_alerts.append(alert)
-
-        for t in triggered_alerts:
-            if t in ACTIVE_ALERTS:
-                ACTIVE_ALERTS.remove(t)
-
-async def daily_summary_reporter_loop(tg_app):
-    while True:
-        try:
-            now = time.localtime()
-            current_seconds = now.tm_hour * 3600 + now.tm_min * 60 + now.tm_sec
-            target_seconds = 8 * 3600
-            
-            if current_seconds >= target_seconds:
-                sleep_seconds = (24 * 3600) - current_seconds + target_seconds
-            else:
-                sleep_seconds = target_seconds - current_seconds
-                
-            await asyncio.sleep(sleep_seconds)
-            
-            report = "☀ **Good Morning! Daily Mining Radar Digest** ☀\n\n"
-            if not MINING_STATUS_STORE:
-                report += "⚠️ No mining status data recorded yet."
-            else:
-                for account_label, bots in MINING_STATUS_STORE.items():
-                    report += f"👤 **{account_label}**\n"
-                    for bot_name, info in bots.items():
-                        status_emoji = "🟢" if "READY" in info["status"] else "⏱️"
-                        report += f"  {status_emoji} `{bot_name}`: **{info['status']}**\n"
-                    report += "\n"
-            report += "📊 _Check your web dashboard for full operational stats._"
-            
-            if ALLOWED_USERS:
-                for user_id in ALLOWED_USERS:
-                    try:
-                        await tg_app.bot.send_message(chat_id=int(user_id), text=report, parse_mode="Markdown")
-                    except Exception as e:
-                        print(f"[!] Failed to send daily report: {e}")
-            
-            await asyncio.sleep(60)
-        except Exception as e:
-            print(f"[!] Error in daily summary reporter loop: {e}")
-            await asyncio.sleep(3600)
 
 async def auto_claimer_loop(telethon_client, account_label="Account-1"):
     print(f"[+] Autonomous Mini-App Radar started for [{account_label}]")
@@ -401,38 +281,17 @@ async def update_settings(payload: dict):
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
-@api_app.post("/api/create-invoice")
-async def create_invoice():
-    try:
-        amount_stars = 150
-        url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/createInvoiceLink"
-        body = {
-            "title": "Mining Radar Pro Pass",
-            "description": "30-Day Automated Bot Cloud Hosting & Dashboard Access",
-            "payload": "monthly_subscription_pass",
-            "currency": "XTR",
-            "prices": [{"label": "1 Month Pass", "amount": amount_stars}]
-        }
-        res = requests.post(url, json=body, timeout=5).json()
-        if res.get("ok"):
-            return {"status": "success", "invoice_link": res["result"]}
-        else:
-            raise HTTPException(status_code=400, detail=res.get("description", "Failed to create invoice"))
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
 # --- TELEGRAM COMMAND HANDLERS ---
 async def tg_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if ALLOWED_USERS and str(update.effective_user.id) not in ALLOWED_USERS: return
     help_text = (
-        "🤖 **Cloud Bot & AI Web Studio**\n\n"
-        "🌐 `/build <idea>` — Create & host a live Website/Mini-App\n"
+        "🤖 **Cloud Bot & OpenAI Web Studio**\n\n"
+        "🌐 `/build <idea>` — Create & host a live Website/Mini-App (GPT-4o)\n"
         "✅ `/done` — Exit interactive Web Studio mode\n"
         "📊 `/dashboard` — Open Mining Control Center\n"
         "📈 `/predict <symbol>` — AI Market Analysis\n"
         "💵 `/crypto <ticker>` — Crypto Spot Price\n"
-        "⭐ `/upgrade` — Buy Pro Pass with Stars\n"
-        "🧠 `/ai <prompt>` — Gemini AI Assistant"
+        "🧠 `/ai <prompt>` — GPT-4o-mini Assistant"
     )
     await update.message.reply_text(help_text, parse_mode="Markdown")
 
@@ -448,7 +307,7 @@ async def tg_build(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     user_id = update.effective_user.id
-    status_msg = await update.message.reply_text("⚡ **Web Studio:** Architecting and deploying your app...", parse_mode="Markdown")
+    status_msg = await update.message.reply_text("⚡ **Web Studio:** Architecting your app with GPT-4o...", parse_mode="Markdown")
 
     try:
         html_code = await asyncio.to_thread(build_or_update_webapp, prompt, None)
@@ -567,28 +426,6 @@ async def tg_dashboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
     reply_markup = InlineKeyboardMarkup(keyboard)
     await update.message.reply_text("🚀 **Autonomous Mining Control Center**", reply_markup=reply_markup, parse_mode="Markdown")
 
-async def tg_upgrade(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if ALLOWED_USERS and str(update.effective_user.id) not in ALLOWED_USERS: return
-    try:
-        await context.bot.send_invoice(
-            chat_id=update.effective_chat.id,
-            title="Mining Radar Pro Pass",
-            description="30-Day Automated Bot Cloud Hosting & Dashboard Access",
-            payload="monthly_subscription_pass",
-            currency="XTR",
-            prices=[LabeledPrice("1 Month Pass", 150)]
-        )
-    except Exception as e:
-        await update.message.reply_text(f"❌ Error generating invoice: {e}")
-
-async def pre_checkout_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.pre_checkout_query
-    await query.answer(ok=True)
-
-async def successful_payment_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    payment = update.message.successful_payment
-    await update.message.reply_text("🎉 **Subscription Activated!** Cloud automation pass active.")
-
 async def tg_predict(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if ALLOWED_USERS and str(update.effective_user.id) not in ALLOWED_USERS: return
     symbol = context.args[0] if context.args else "bitcoin"
@@ -618,32 +455,26 @@ async def main():
         "dashboard": tg_dashboard,
         "predict": tg_predict,
         "crypto": tg_crypto,
-        "upgrade": tg_upgrade
     }
     for name, handler in handlers.items():
         tg_app.add_handler(CommandHandler([name, name.upper()], handler))
 
-    tg_app.add_handler(PreCheckoutQueryHandler(pre_checkout_handler))
-    tg_app.add_handler(MessageHandler(filters.SUCCESSFUL_PAYMENT, successful_payment_handler))
     tg_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, tg_studio_message_handler))
 
     await tg_app.initialize()
     await tg_app.start()
      
     tg_menu = [
-        BotCommand("build", "Create & Host a Website/Mini-App"),
+        BotCommand("build", "Create & Host Website/Mini-App"),
         BotCommand("done", "Exit Web Studio Edit Mode"),
         BotCommand("dashboard", "Open Mining Mini-App"),
         BotCommand("predict", "AI Technical Analysis"),
         BotCommand("crypto", "Crypto Price Lookup"),
-        BotCommand("upgrade", "Buy Pro Pass with Stars"),
+        BotCommand("ai", "GPT-4o-mini Assistant"),
         BotCommand("help", "Show Bot Commands")
     ]
     await tg_app.bot.set_my_commands(tg_menu)
     await tg_app.updater.start_polling(drop_pending_updates=True)
-     
-    asyncio.create_task(check_price_alerts_loop(tg_app, None))
-    asyncio.create_task(daily_summary_reporter_loop(tg_app))
 
     session_one = os.getenv("SESSION_STRING_ONE", "").strip()
     if session_one:
@@ -654,16 +485,7 @@ async def main():
         except Exception as e:
             print(f"[!] Failed Account-1: {e}")
 
-    second_session_string = os.getenv("SECOND_SESSION_STRING", "").strip()
-    if second_session_string:
-        try:
-            telethon_client_two = TelegramClient(StringSession(second_session_string), TELEGRAM_API_ID, TELEGRAM_API_HASH)
-            await telethon_client_two.start()
-            asyncio.create_task(auto_claimer_loop(telethon_client_two, "Account-2"))
-        except Exception as e:
-            print(f"[!] Failed Account-2: {e}")
-
-    print("[+] Cloud Bot, Mining Radar & Interactive Web Studio running.")
+    print("[+] Cloud Bot, Mining Radar & OpenAI Web Studio running.")
     while True:
         await asyncio.sleep(3600)
 
