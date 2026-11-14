@@ -4,7 +4,6 @@ fastapi>=0.110
 uvicorn>=0.29
 python-dotenv
 requests
-google-genai
 sqlalchemy>=2.0
 psycopg2-binary
 tzdata
@@ -12,3 +11,4 @@ psutil
 beautifulsoup4
 yt-dlp
 discord.py
+openai
