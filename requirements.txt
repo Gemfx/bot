@@ -10,3 +10,4 @@ psycopg2-binary
 tzdata
 psutil
 beautifulsoup4
+yt-dlp
