@@ -1,5 +1,5 @@
 python-telegram-bot>=21.0
-telethon>=1.36,<2
+telethon<2,>=1.36
 fastapi>=0.110
 uvicorn>=0.29
 python-dotenv
@@ -8,3 +8,4 @@ google-genai
 sqlalchemy>=2.0
 psycopg2-binary
 tzdata
+psutil
