@@ -93,29 +93,36 @@ def fetch_pair_price(symbol: str, asset_type: str = "crypto") -> float | None:
         print(f"[!] Price fetch error: {e}")
     return None
 
+# --- RESILIENT AI CALL WITH 503 FALLBACK ---
 def generate_ai_response(prompt: str) -> str:
     try:
         if not GEMINI_API_KEY:
             return "Error: GEMINI_API_KEY is missing."
         client = genai.Client(api_key=GEMINI_API_KEY)
-        response = client.models.generate_content(
-            model="gemini-3.8-flash",
-            contents=prompt,
-        )
-        return response.text
+        try:
+            response = client.models.generate_content(
+                model="gemini-3.8-flash",
+                contents=prompt,
+            )
+            return response.text
+        except Exception as primary_err:
+            print(f"[!] Primary model busy (503), falling back to gemini-2.5-flash: {primary_err}")
+            response = client.models.generate_content(
+                model="gemini-2.5-flash",
+                contents=prompt,
+            )
+            return response.text
     except Exception as e:
         return f"AI Error: {str(e)}"
 
-# --- MULTI-TURN WEB & MINI-APP CODE GENERATOR ---
+# --- MULTI-TURN WEB & MINI-APP CODE GENERATOR WITH FALLBACK ---
 def extract_clean_html(raw_text: str) -> str:
-    """Strips markdown code blocks to return pure, valid HTML."""
     match = re.search(r"```(?:html)?\s*(.*?)```", raw_text, re.DOTALL | re.IGNORECASE)
     if match:
         return match.group(1).strip()
     return raw_text.strip()
 
 def build_or_update_webapp(prompt: str, existing_html: str | None = None) -> str:
-    """Generates a complete single-file HTML/Tailwind/JS web app or modifies an existing one."""
     if not GEMINI_API_KEY:
         raise ValueError("GEMINI_API_KEY is missing in environment variables.")
 
@@ -127,27 +134,34 @@ def build_or_update_webapp(prompt: str, existing_html: str | None = None) -> str
             "and Telegram Mini-Apps.\n"
             "Build a COMPLETE, self-contained, single-file HTML5 application based on the user's request.\n"
             "Rules:\n"
-            "1. Include Tailwind CSS via CDN (<script src='https://cdn.tailwindcss.com'></script>) and Lucide icons or FontAwesome if helpful.\n"
-            "2. Include the Telegram WebApp SDK (<script src='https://telegram.org/js/telegram-web-app.js'></script>) and initialize window.Telegram?.WebApp?.ready() so it works seamlessly both in standard browsers and inside Telegram Mini-Apps.\n"
-            "3. Write rich, interactive, working JavaScript logic (no placeholder alerts or broken buttons).\n"
-            "4. Use sleek modern styling, responsive mobile-first layouts, smooth transitions, and clean typography.\n"
-            "5. Output ONLY the raw HTML code starting with <!DOCTYPE html>. Do not include explanations outside the code.\n\n"
+            "1. Include Tailwind CSS via CDN (<script src='https://cdn.tailwindcss.com'></script>).\n"
+            "2. Include the Telegram WebApp SDK (<script src='https://telegram.org/js/telegram-web-app.js'></script>) and initialize window.Telegram?.WebApp?.ready().\n"
+            "3. Write rich, interactive, working JavaScript logic.\n"
+            "4. Output ONLY the raw HTML code starting with <!DOCTYPE html>. No explanations outside code.\n\n"
             f"User Request: {prompt}"
         )
     else:
         system_prompt = (
             "You are an elite full-stack web developer modifying an existing single-file HTML5/Tailwind/JS web application.\n"
-            "Apply the user's requested changes cleanly while preserving all existing working features, layout structure, and Telegram WebApp SDK integration.\n"
-            "Output ONLY the complete, updated raw HTML code starting with <!DOCTYPE html>. Do not truncate or omit unchanged sections.\n\n"
+            "Apply the user's requested changes cleanly while preserving all existing working features and Telegram WebApp SDK integration.\n"
+            "Output ONLY the complete, updated raw HTML code starting with <!DOCTYPE html>.\n\n"
             f"Requested Changes: {prompt}\n\n"
             f"Current HTML Code:\n{existing_html}"
         )
 
-    response = client.models.generate_content(
-        model="gemini-3.8-flash",
-        contents=system_prompt,
-    )
-    return extract_clean_html(response.text)
+    try:
+        response = client.models.generate_content(
+            model="gemini-3.8-flash",
+            contents=system_prompt,
+        )
+        return extract_clean_html(response.text)
+    except Exception as e:
+        print(f"[!] Primary model 503 error during build, falling back to gemini-2.5-flash: {e}")
+        response = client.models.generate_content(
+            model="gemini-2.5-flash",
+            contents=system_prompt,
+        )
+        return extract_clean_html(response.text)
 # -------------------------------------------------
 
 async def analyze_mining_screenshot_with_ai(image_bytes: bytes, bot_name: str) -> str:
@@ -155,19 +169,18 @@ async def analyze_mining_screenshot_with_ai(image_bytes: bytes, bot_name: str) -
         if not GEMINI_API_KEY:
             return "AI Vision Key Missing"
         client = genai.Client(api_key=GEMINI_API_KEY)
-        response = client.models.generate_content(
-            model="gemini-3.8-flash",
-            contents=[
-                image_bytes,
-                (
-                    f"Analyze this UI render for mining bot {bot_name}. "
-                    "1. Is the claim button active or visible? (YES/NO). "
-                    "2. Extract current balance numbers. "
-                    "Keep response under 30 words."
-                )
-            ]
-        )
-        return response.text
+        try:
+            response = client.models.generate_content(
+                model="gemini-3.8-flash",
+                contents=[image_bytes, f"Analyze UI for {bot_name}. Is claim active? YES/NO. Keep under 30 words."]
+            )
+            return response.text
+        except Exception:
+            response = client.models.generate_content(
+                model="gemini-2.5-flash",
+                contents=[image_bytes, f"Analyze UI for {bot_name}. Is claim active? YES/NO. Keep under 30 words."]
+            )
+            return response.text
     except Exception as e:
         return f"Vision Error: {str(e)}"
 
@@ -236,10 +249,6 @@ async def check_price_alerts_loop(tg_app, discord_bot):
                 try:
                     if alert["platform"] == "telegram":
                         await tg_app.bot.send_message(chat_id=alert["channel_id"], text=msg, parse_mode="Markdown")
-                    elif alert["platform"] == "discord":
-                        channel = discord_bot.get_channel(alert["channel_id"])
-                        if channel:
-                            await channel.send(msg)
                 except Exception as e:
                     print(f"[!] Notification error: {e}")
                  
@@ -287,7 +296,6 @@ async def daily_summary_reporter_loop(tg_app):
             print(f"[!] Error in daily summary reporter loop: {e}")
             await asyncio.sleep(3600)
 
-# --- AUTONOMOUS MINI-APP RADAR LOOP ---
 async def auto_claimer_loop(telethon_client, account_label="Account-1"):
     print(f"[+] Autonomous Mini-App Radar started for [{account_label}]")
     await asyncio.sleep(10)
@@ -360,16 +368,13 @@ def root():
         return FileResponse("templates/index.html")
     return {"status": "online", "service": "Master Cloud Bot & Web Studio active"}
 
-# --- LIVE HOSTING ROUTE FOR GENERATED WEBSITES & MINI-APPS ---
 @api_app.get("/apps/{site_id}", response_class=HTMLResponse)
 async def serve_generated_app(site_id: str):
-    # Sanitize site_id to prevent directory traversal
     safe_id = re.sub(r"[^a-zA-Z0-9_-]", "", site_id)
     file_path = os.path.join(GENERATED_SITES_DIR, f"{safe_id}.html")
     if os.path.exists(file_path):
         return FileResponse(file_path, media_type="text/html")
     raise HTTPException(status_code=404, detail="Generated Web App not found or expired.")
-# -------------------------------------------------------------
 
 @api_app.get("/api/mining-status")
 async def get_mining_status():
@@ -416,26 +421,6 @@ async def create_invoice():
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@api_app.post("/api/action/{account_id}/{action_type}")
-async def trigger_dashboard_action(account_id: int, action_type: str):
-    global telethon_client_one, telethon_client_two
-    try:
-        client = telethon_client_one if account_id == 1 else telethon_client_two
-        if not client or not client.is_connected():
-            raise HTTPException(status_code=400, detail=f"Account {account_id} client is not active.")
-
-        if action_type == "force_check":
-            target_bot = MINING_BOT_USERNAMES[0] if MINING_BOT_USERNAMES else "@UltrawalletTrade_Bot"
-            bot_entity = await client.get_entity(target_bot)
-            await client.send_message(bot_entity, STATUS_COMMAND)
-            return {"status": "success", "message": f"Account {account_id} dispatched check."}
-        elif action_type == "restart_mining":
-            return {"status": "success", "message": f"Account {account_id} action executed."}
-        else:
-            raise HTTPException(status_code=400, detail="Unknown action type.")
-    except Exception as e:
-        return {"status": "error", "message": str(e)}
-
 # --- TELEGRAM COMMAND HANDLERS ---
 async def tg_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if ALLOWED_USERS and str(update.effective_user.id) not in ALLOWED_USERS: return
@@ -447,24 +432,23 @@ async def tg_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "📈 `/predict <symbol>` — AI Market Analysis\n"
         "💵 `/crypto <ticker>` — Crypto Spot Price\n"
         "⭐ `/upgrade` — Buy Pro Pass with Stars\n"
-        "🧠 `/ai <prompt>` — Gemini 3.8 Flash Assistant"
+        "🧠 `/ai <prompt>` — Gemini AI Assistant"
     )
     await update.message.reply_text(help_text, parse_mode="Markdown")
 
 async def tg_build(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Starts a new multi-turn Website/Mini-App build session."""
     if ALLOWED_USERS and str(update.effective_user.id) not in ALLOWED_USERS: return
     prompt = " ".join(context.args).strip()
     if not prompt:
         await update.message.reply_text(
             "💡 **Usage:** `/build <describe your website or mini-app>`\n"
-            "Example: `/build A modern dark-mode crypto portfolio dashboard with live price cards`",
+            "Example: `/build A modern dark-mode crypto portfolio dashboard`",
             parse_mode="Markdown"
         )
         return
 
     user_id = update.effective_user.id
-    status_msg = await update.message.reply_text("⚡ **Web Studio:** Architecting and deploying your app with Gemini 3.8 Flash...", parse_mode="Markdown")
+    status_msg = await update.message.reply_text("⚡ **Web Studio:** Architecting and deploying your app...", parse_mode="Markdown")
 
     try:
         html_code = await asyncio.to_thread(build_or_update_webapp, prompt, None)
@@ -492,12 +476,11 @@ async def tg_build(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await status_msg.edit_text(
             f"✅ **Website & Mini-App Deployed!**\n\n"
             f"🔗 **Live URL:** `{live_url}`\n\n"
-            f"🎨 **Studio Mode Active:** Reply with any edit instructions (e.g., _'Change theme to emerald green and add a contact form'_) to update the live site instantly, or send `/done` to finish.",
+            f"🎨 **Studio Mode Active:** Reply with any edit instructions to update the live site instantly, or send `/done` to finish.",
             reply_markup=reply_markup,
             parse_mode="Markdown"
         )
 
-        # Send downloadable source code file
         with open(file_path, "rb") as doc:
             await update.message.reply_document(
                 document=doc,
@@ -508,17 +491,15 @@ async def tg_build(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await status_msg.edit_text(f"❌ Build failed: {str(e)}")
 
 async def tg_done(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Exits interactive Web Studio mode."""
     if ALLOWED_USERS and str(update.effective_user.id) not in ALLOWED_USERS: return
     user_id = update.effective_user.id
     if user_id in USER_WEB_PROJECTS and USER_WEB_PROJECTS[user_id].get("active"):
         USER_WEB_PROJECTS[user_id]["active"] = False
-        await update.message.reply_text("✅ **Web Studio Session Closed.** Your last generated site remains live at its link. Use `/build` anytime to start a new project.", parse_mode="Markdown")
+        await update.message.reply_text("✅ **Web Studio Session Closed.** Your site remains live at its link. Use `/build` anytime to start a new project.", parse_mode="Markdown")
     else:
         await update.message.reply_text("ℹ️ You don't have an active Web Studio session running.")
 
 async def tg_studio_message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Captures normal text messages when user is in active Web Studio mode to iterate on their app."""
     if not update.message or not update.message.text:
         return
     if ALLOWED_USERS and str(update.effective_user.id) not in ALLOWED_USERS:
@@ -528,7 +509,7 @@ async def tg_studio_message_handler(update: Update, context: ContextTypes.DEFAUL
     project = USER_WEB_PROJECTS.get(user_id)
 
     if not project or not project.get("active"):
-        return  # Ignore normal chat messages if not actively building a site
+        return
 
     edit_prompt = update.message.text.strip()
     status_msg = await update.message.reply_text("🔄 **Applying live edits to your web app...**", parse_mode="Markdown")
@@ -644,7 +625,6 @@ async def main():
 
     tg_app.add_handler(PreCheckoutQueryHandler(pre_checkout_handler))
     tg_app.add_handler(MessageHandler(filters.SUCCESSFUL_PAYMENT, successful_payment_handler))
-    # Multi-turn Web Studio listener for plain text edits
     tg_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, tg_studio_message_handler))
 
     await tg_app.initialize()
