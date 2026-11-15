@@ -10,5 +10,3 @@ tzdata
 psutil
 beautifulsoup4
 yt-dlp
-discord.py
-openai
