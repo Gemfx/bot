@@ -3,7 +3,7 @@ import re
 import uuid
 import time
 import asyncio
-from datetime import timedelta
+from contextlib import asynccontextmanager
 from urllib.parse import urlparse
 
 from dotenv import load_dotenv
@@ -13,7 +13,6 @@ from telegram import Update, BotCommand, InlineKeyboardButton, InlineKeyboardMar
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes, PreCheckoutQueryHandler, MessageHandler, filters
 from telegram.request import HTTPXRequest
 
-from openai import OpenAI
 from telethon import TelegramClient
 from telethon.sessions import StringSession
 
@@ -26,7 +25,6 @@ import uvicorn
 load_dotenv()
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "").strip()
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "").strip()
 ALLOWED_USERS_RAW = os.getenv("ALLOWED_USERS", "")
 ALLOWED_USERS = [x.strip() for x in ALLOWED_USERS_RAW.split(",") if x.strip()]
 
@@ -44,7 +42,9 @@ ACTIVE_ALERTS = []
 MINING_STATUS_STORE = {}
 
 # --- WEB & MINI-APP STUDIO STATE ---
+TEMPLATES_DIR = "app_templates"
 GENERATED_SITES_DIR = "generated_sites"
+os.makedirs(TEMPLATES_DIR, exist_ok=True)
 os.makedirs(GENERATED_SITES_DIR, exist_ok=True)
 USER_WEB_PROJECTS = {}  # {user_id: {"site_id": str, "html": str, "active": bool}}
 # -----------------------------------
@@ -56,13 +56,59 @@ DYNAMIC_CONFIG = {
 }
 
 telethon_client_one = None
-telethon_client_two = None
+tg_app_global = None
 
 TICKER_MAP = {
     "usdt": "tether", "btc": "bitcoin", "eth": "ethereum",
     "sol": "solana", "bnb": "binancecoin", "xrp": "ripple",
     "doge": "dogecoin", "ada": "cardano"
 }
+
+# --- DEFAULT MASTER TEMPLATE ---
+DEFAULT_TEMPLATE = """<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{TITLE}}</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://telegram.org/js/telegram-web-app.js"></script>
+</head>
+<body class="bg-gray-950 text-white min-h-screen flex flex-col items-center justify-center p-6">
+    <div class="max-w-md w-full bg-gray-900 border border-gray-800 rounded-2xl p-6 shadow-2xl text-center">
+        <h1 class="text-2xl font-bold text-transparent bg-clip-text bg-gradient-to-r from-emerald-400 to-cyan-400 mb-3">{{TITLE}}</h1>
+        <p class="text-gray-400 text-sm mb-6">{{DESCRIPTION}}</p>
+        <div class="bg-gray-800/50 rounded-xl p-4 mb-6 border border-gray-700/50">
+            <span class="text-xs uppercase tracking-wider text-gray-500 font-semibold">Status</span>
+            <div class="text-lg font-mono text-emerald-400 mt-1">🟢 Active & Operational</div>
+        </div>
+        <button onclick="Telegram.WebApp.close()" class="w-full py-3 px-4 bg-emerald-500 hover:bg-emerald-600 text-gray-950 font-bold rounded-xl transition shadow-lg shadow-emerald-500/20">
+            Close Mini-App
+        </button>
+    </div>
+    <script>
+        window.Telegram?.WebApp?.ready();
+    </script>
+</body>
+</html>
+"""
+
+if not os.path.exists(os.path.join(TEMPLATES_DIR, "default.html")):
+    with open(os.path.join(TEMPLATES_DIR, "default.html"), "w", encoding="utf-8") as f:
+        f.write(DEFAULT_TEMPLATE)
+
+def build_webapp_from_template(prompt: str, existing_html: str | None = None) -> str:
+    parts = [p.strip() for p in prompt.split("|")]
+    title = parts[0] if len(parts) > 0 and parts[0] else "My Telegram Mini-App"
+    description = parts[1] if len(parts) > 1 and parts[1] else "Custom built via template engine."
+
+    template_path = os.path.join(TEMPLATES_DIR, "default.html")
+    with open(template_path, "r", encoding="utf-8") as f:
+        html_content = f.read()
+
+    html_content = html_content.replace("{{TITLE}}", title)
+    html_content = html_content.replace("{{DESCRIPTION}}", description)
+    return html_content
 
 def fetch_pair_price(symbol: str, asset_type: str = "crypto") -> float | None:
     symbol_clean = symbol.lower().strip()
@@ -73,108 +119,9 @@ def fetch_pair_price(symbol: str, asset_type: str = "crypto") -> float | None:
             res = requests.get(url, timeout=5).json()
             if symbol_clean in res:
                 return float(res[symbol_clean]["usd"])
-        elif asset_type == "forex":
-            base = symbol_clean[:3].upper()
-            target = symbol_clean[3:].upper() if len(symbol_clean) >= 6 else "USD"
-            url = f"https://open.er-api.com/v6/latest/{base}"
-            res = requests.get(url, timeout=5).json()
-            if "rates" in res and target in res["rates"]:
-                return float(res["rates"][target])
     except Exception as e:
         print(f"[!] Price fetch error: {e}")
     return None
-
-# --- GENERAL AI HELPER (Powered by OpenAI GPT-4o-mini) ---
-def generate_ai_response(prompt: str) -> str:
-    try:
-        if not OPENAI_API_KEY:
-            return "Error: OPENAI_API_KEY is missing."
-        client = OpenAI(api_key=OPENAI_API_KEY)
-        response = client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[{"role": "user", "content": prompt}],
-            max_tokens=800
-        )
-        return response.choices[0].message.content
-    except Exception as e:
-        return f"OpenAI Error: {str(e)}"
-
-# --- WEB & MINI-APP BUILDER (Powered by OpenAI GPT-4o) ---
-def extract_clean_html(raw_text: str) -> str:
-    match = re.search(r"```(?:html)?\s*(.*?)```", raw_text, re.DOTALL | re.IGNORECASE)
-    if match:
-        return match.group(1).strip()
-    return raw_text.strip()
-
-def build_or_update_webapp(prompt: str, existing_html: str | None = None) -> str:
-    if not OPENAI_API_KEY:
-        raise ValueError("OPENAI_API_KEY is missing in environment variables.")
-
-    client = OpenAI(api_key=OPENAI_API_KEY)
-
-    if not existing_html:
-        system_prompt = (
-            "You are an elite full-stack web developer and UI/UX designer specializing in modern responsive websites "
-            "and Telegram Mini-Apps.\n"
-            "Build a COMPLETE, self-contained, single-file HTML5 application based on the user's request.\n"
-            "Rules:\n"
-            "1. Include Tailwind CSS via CDN (<script src='https://cdn.tailwindcss.com'></script>).\n"
-            "2. Include the Telegram WebApp SDK (<script src='https://telegram.org/js/telegram-web-app.js'></script>) and initialize window.Telegram?.WebApp?.ready().\n"
-            "3. Write rich, interactive, working JavaScript logic.\n"
-            "4. Output ONLY the raw HTML code starting with <!DOCTYPE html>. No explanations outside code.\n\n"
-            f"User Request: {prompt}"
-        )
-    else:
-        system_prompt = (
-            "You are an elite full-stack web developer modifying an existing single-file HTML5/Tailwind/JS web application.\n"
-            "Apply the user's requested changes cleanly while preserving all existing working features and Telegram WebApp SDK integration.\n"
-            "Output ONLY the complete, updated raw HTML code starting with <!DOCTYPE html>.\n\n"
-            f"Requested Changes: {prompt}\n\n"
-            f"Current HTML Code:\n{existing_html}"
-        )
-
-    response = client.chat.completions.create(
-        model="gpt-4o",
-        messages=[{"role": "user", "content": system_prompt}],
-        max_tokens=4000
-    )
-    return extract_clean_html(response.choices[0].message.content)
-
-def analyze_market_trend(symbol: str) -> str:
-    symbol_clean = TICKER_MAP.get(symbol.lower().strip(), symbol.lower().strip())
-    url = f"https://api.coingecko.com/api/v3/coins/{symbol_clean}/market_chart?vs_currency=usd&days=14&interval=daily"
-    try:
-        res = requests.get(url, timeout=5).json()
-        if "prices" not in res:
-            return f"❌ Could not retrieve market data for '{symbol}'."
-        prices = [p[1] for p in res["prices"]]
-        current_price = prices[-1]
-        avg_14d = sum(prices) / len(prices)
-        price_change_14d = ((current_price - prices[0]) / prices[0]) * 100
-
-        gains, losses = [], []
-        for i in range(1, len(prices)):
-            diff = prices[i] - prices[i - 1]
-            gains.append(diff if diff > 0 else 0)
-            losses.append(abs(diff) if diff < 0 else 0)
-         
-        avg_gain = sum(gains) / len(gains) if gains else 0
-        avg_loss = sum(losses) / len(losses) if losses else 0
-        rs = (avg_gain / avg_loss) if avg_loss != 0 else 100
-        rsi = 100 - (100 / (1 + rs))
-
-        prompt = (
-            f"Act as a quantitative market analyst. Concise technical analysis:\n"
-            f"• Asset: {symbol.upper()}\n"
-            f"• Current Price: ${current_price:,.2f}\n"
-            f"• 14-Day Average: ${avg_14d:,.2f}\n"
-            f"• 14-Day Change: {price_change_14d:.2f}%\n"
-            f"• 14-Day RSI: {rsi:.1f}\n\n"
-            f"Provide Sentiment, Indicator Signal, Target Levels & Risk Caution. Under 160 words."
-        )
-        return generate_ai_response(prompt)
-    except Exception as e:
-        return f"Analysis error: {str(e)}"
 
 async def auto_claimer_loop(telethon_client, account_label="Account-1"):
     print(f"[+] Autonomous Mini-App Radar started for [{account_label}]")
@@ -186,9 +133,7 @@ async def auto_claimer_loop(telethon_client, account_label="Account-1"):
         current_bots = DYNAMIC_CONFIG.get("active_bots", MINING_BOT_USERNAMES)
         for bot_username in current_bots:
             try:
-                print(f"[*] [{account_label}] Scanning Mini-App state for: {bot_username}")
                 bot_entity = await telethon_client.get_entity(bot_username)
-                 
                 await telethon_client.send_message(bot_entity, STATUS_COMMAND)
                 await asyncio.sleep(6)
                  
@@ -235,18 +180,64 @@ async def auto_claimer_loop(telethon_client, account_label="Account-1"):
         poll_interval = DYNAMIC_CONFIG.get("polling_interval", 900)
         await asyncio.sleep(poll_interval)
 
-# --- FASTAPI BACKEND API SETUP ---
-api_app = FastAPI(title="Cloud Bot & Mining Dashboard API")
+# --- FASTAPP LIFESPAN & BACKEND SETUP ---
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    global tg_app_global, telethon_client_one
+    
+    # 1. Initialize Telegram Bot Application
+    tg_app_global = ApplicationBuilder().token(TELEGRAM_TOKEN).request(HTTPXRequest(connect_timeout=30.0, read_timeout=30.0)).build()
+     
+    handlers = {
+        "help": tg_help,
+        "build": tg_build,
+        "done": tg_done,
+        "dashboard": tg_dashboard,
+        "crypto": tg_crypto,
+    }
+    for name, handler in handlers.items():
+        tg_app_global.add_handler(CommandHandler([name, name.upper()], handler))
 
-@api_app.on_event("startup")
-async def startup_event():
-    asyncio.create_task(main())
+    tg_app_global.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, tg_studio_message_handler))
+
+    await tg_app_global.initialize()
+    await tg_app_global.start()
+     
+    tg_menu = [
+        BotCommand("build", "Create & Host Mini-App"),
+        BotCommand("done", "Exit Edit Mode"),
+        BotCommand("dashboard", "Open Mining Dashboard"),
+        BotCommand("crypto", "Crypto Price Lookup"),
+        BotCommand("help", "Show Commands")
+    ]
+    await tg_app_global.bot.set_my_commands(tg_menu)
+    await tg_app_global.updater.start_polling(drop_pending_updates=True)
+
+    # 2. Initialize Telethon Userbot if session string provided
+    session_one = os.getenv("SESSION_STRING_ONE", "").strip()
+    if session_one:
+        try:
+            telethon_client_one = TelegramClient(StringSession(session_one), TELEGRAM_API_ID, TELEGRAM_API_HASH)
+            await telethon_client_one.start()
+            asyncio.create_task(auto_claimer_loop(telethon_client_one, "Account-1"))
+        except Exception as e:
+            print(f"[!] Failed Account-1: {e}")
+
+    print("[+] Cloud Bot, FastAPI Server & Template Engine successfully started.")
+    yield
+    
+    # Shutdown cleanup
+    if tg_app_global:
+        await tg_app_global.stop()
+        await tg_app_global.shutdown()
+
+api_app = FastAPI(title="Cloud Bot & Mining Dashboard API", lifespan=lifespan)
 
 @api_app.get("/", response_class=HTMLResponse)
 def root():
     if os.path.exists("templates/index.html"):
         return FileResponse("templates/index.html")
-    return {"status": "online", "service": "Master Cloud Bot & Web Studio active"}
+    return {"status": "online", "service": "Master Cloud Bot & Template Web Studio active"}
 
 @api_app.get("/apps/{site_id}", response_class=HTMLResponse)
 async def serve_generated_app(site_id: str):
@@ -285,13 +276,12 @@ async def update_settings(payload: dict):
 async def tg_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if ALLOWED_USERS and str(update.effective_user.id) not in ALLOWED_USERS: return
     help_text = (
-        "🤖 **Cloud Bot & OpenAI Web Studio**\n\n"
-        "🌐 `/build <idea>` — Create & host a live Website/Mini-App (GPT-4o)\n"
-        "✅ `/done` — Exit interactive Web Studio mode\n"
+        "🤖 **Cloud Bot & Template Web Studio**\n\n"
+        "🌐 `/build Title | Description` — Instant template deployment\n"
+        "✅ `/done` — Exit interactive Studio mode\n"
         "📊 `/dashboard` — Open Mining Control Center\n"
-        "📈 `/predict <symbol>` — AI Market Analysis\n"
         "💵 `/crypto <ticker>` — Crypto Spot Price\n"
-        "🧠 `/ai <prompt>` — GPT-4o-mini Assistant"
+        "ℹ️ `/help` — Show commands"
     )
     await update.message.reply_text(help_text, parse_mode="Markdown")
 
@@ -300,17 +290,17 @@ async def tg_build(update: Update, context: ContextTypes.DEFAULT_TYPE):
     prompt = " ".join(context.args).strip()
     if not prompt:
         await update.message.reply_text(
-            "💡 **Usage:** `/build <describe your website or mini-app>`\n"
-            "Example: `/build A modern dark-mode crypto portfolio dashboard`",
+            "💡 **Usage:** `/build Title | Description`\n"
+            "Example: `/build Crypto Tracker | Live portfolio dashboard`",
             parse_mode="Markdown"
         )
         return
 
     user_id = update.effective_user.id
-    status_msg = await update.message.reply_text("⚡ **Web Studio:** Architecting your app with GPT-4o...", parse_mode="Markdown")
+    status_msg = await update.message.reply_text("⚡ Generating and hosting your Mini-App...", parse_mode="Markdown")
 
     try:
-        html_code = await asyncio.to_thread(build_or_update_webapp, prompt, None)
+        html_code = build_webapp_from_template(prompt, None)
         site_id = f"app_{uuid.uuid4().hex[:8]}"
         file_path = os.path.join(GENERATED_SITES_DIR, f"{site_id}.html")
 
@@ -333,19 +323,12 @@ async def tg_build(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup = InlineKeyboardMarkup(keyboard)
 
         await status_msg.edit_text(
-            f"✅ **Website & Mini-App Deployed!**\n\n"
+            f"✅ **Mini-App Deployed Instantly!**\n\n"
             f"🔗 **Live URL:** `{live_url}`\n\n"
-            f"🎨 **Studio Mode Active:** Reply with any edit instructions to update the live site instantly, or send `/done` to finish.",
+            f"🎨 **Studio Mode Active:** Send text edits to update the title/description, or send `/done` to finish.",
             reply_markup=reply_markup,
             parse_mode="Markdown"
         )
-
-        with open(file_path, "rb") as doc:
-            await update.message.reply_document(
-                document=doc,
-                filename=f"{site_id}.html",
-                caption="📦 Source code (`index.html` ready for hosting)"
-            )
     except Exception as e:
         await status_msg.edit_text(f"❌ Build failed: {str(e)}")
 
@@ -354,7 +337,7 @@ async def tg_done(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     if user_id in USER_WEB_PROJECTS and USER_WEB_PROJECTS[user_id].get("active"):
         USER_WEB_PROJECTS[user_id]["active"] = False
-        await update.message.reply_text("✅ **Web Studio Session Closed.** Your site remains live at its link. Use `/build` anytime to start a new project.", parse_mode="Markdown")
+        await update.message.reply_text("✅ **Web Studio Session Closed.** Your app remains live at its link.", parse_mode="Markdown")
     else:
         await update.message.reply_text("ℹ️ You don't have an active Web Studio session running.")
 
@@ -371,10 +354,8 @@ async def tg_studio_message_handler(update: Update, context: ContextTypes.DEFAUL
         return
 
     edit_prompt = update.message.text.strip()
-    status_msg = await update.message.reply_text("🔄 **Applying live edits to your web app...**", parse_mode="Markdown")
-
     try:
-        updated_html = await asyncio.to_thread(build_or_update_webapp, edit_prompt, project["html"])
+        updated_html = build_webapp_from_template(edit_prompt, project["html"])
         site_id = project["site_id"]
         file_path = os.path.join(GENERATED_SITES_DIR, f"{site_id}.html")
 
@@ -382,42 +363,12 @@ async def tg_studio_message_handler(update: Update, context: ContextTypes.DEFAUL
             f.write(updated_html)
 
         project["html"] = updated_html
-
         base_url = os.getenv("RENDER_EXTERNAL_URL", "https://your-app-name.onrender.com").rstrip("/")
         live_url = f"{base_url}/apps/{site_id}"
 
-        keyboard = [
-            [InlineKeyboardButton("🚀 Preview Updated Mini-App", web_app={"url": live_url})],
-            [InlineKeyboardButton("🌐 Open in External Browser", url=live_url)]
-        ]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-
-        await status_msg.edit_text(
-            f"✨ **Live App Updated!**\n\n"
-            f"🔗 **URL:** `{live_url}`\n"
-            f"💬 Keep sending messages for more changes, or type `/done` to close Studio Mode.",
-            reply_markup=reply_markup,
-            parse_mode="Markdown"
-        )
-
-        with open(file_path, "rb") as doc:
-            await update.message.reply_document(
-                document=doc,
-                filename=f"{site_id}_updated.html",
-                caption="📦 Updated HTML source file"
-            )
+        await update.message.reply_text(f"✨ **App Updated!** Live at: `{live_url}`", parse_mode="Markdown")
     except Exception as e:
-        await status_msg.edit_text(f"❌ Update failed: {str(e)}")
-
-async def tg_ai(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if ALLOWED_USERS and str(update.effective_user.id) not in ALLOWED_USERS: return
-    prompt = " ".join(context.args).strip()
-    if not prompt:
-        await update.message.reply_text("Usage: `/ai <your question>`", parse_mode="Markdown")
-        return
-    msg = await update.message.reply_text("🧠 Thinking...")
-    reply = await asyncio.to_thread(generate_ai_response, prompt)
-    await msg.edit_text(reply)
+        await update.message.reply_text(f"❌ Update failed: {str(e)}")
 
 async def tg_dashboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if ALLOWED_USERS and str(update.effective_user.id) not in ALLOWED_USERS: return
@@ -426,68 +377,15 @@ async def tg_dashboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
     reply_markup = InlineKeyboardMarkup(keyboard)
     await update.message.reply_text("🚀 **Autonomous Mining Control Center**", reply_markup=reply_markup, parse_mode="Markdown")
 
-async def tg_predict(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if ALLOWED_USERS and str(update.effective_user.id) not in ALLOWED_USERS: return
-    symbol = context.args[0] if context.args else "bitcoin"
-    msg = await update.message.reply_text(f"📊 Analyzing {symbol.upper()}...")
-    analysis = await asyncio.to_thread(analyze_market_trend, symbol)
-    await msg.edit_text(analysis)
-
 async def tg_crypto(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if ALLOWED_USERS and str(update.effective_user.id) not in ALLOWED_USERS: return
     symbol = context.args[0] if context.args else "bitcoin"
-    price = await asyncio.to_thread(fetch_pair_price, symbol, "crypto")
+    price = fetch_pair_price(symbol, "crypto")
     if price:
         await update.message.reply_text(f"💵 **{symbol.upper()}:** ${price:,.4f}", parse_mode="Markdown")
     else:
         await update.message.reply_text("❌ Ticker not found.")
 
-async def main():
-    global telethon_client_one, telethon_client_two
-
-    tg_app = ApplicationBuilder().token(TELEGRAM_TOKEN).request(HTTPXRequest(connect_timeout=30.0, read_timeout=30.0)).build()
-     
-    handlers = {
-        "help": tg_help,
-        "build": tg_build,
-        "done": tg_done,
-        "ai": tg_ai,
-        "dashboard": tg_dashboard,
-        "predict": tg_predict,
-        "crypto": tg_crypto,
-    }
-    for name, handler in handlers.items():
-        tg_app.add_handler(CommandHandler([name, name.upper()], handler))
-
-    tg_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, tg_studio_message_handler))
-
-    await tg_app.initialize()
-    await tg_app.start()
-     
-    tg_menu = [
-        BotCommand("build", "Create & Host Website/Mini-App"),
-        BotCommand("done", "Exit Web Studio Edit Mode"),
-        BotCommand("dashboard", "Open Mining Mini-App"),
-        BotCommand("predict", "AI Technical Analysis"),
-        BotCommand("crypto", "Crypto Price Lookup"),
-        BotCommand("ai", "GPT-4o-mini Assistant"),
-        BotCommand("help", "Show Bot Commands")
-    ]
-    await tg_app.bot.set_my_commands(tg_menu)
-    await tg_app.updater.start_polling(drop_pending_updates=True)
-
-    session_one = os.getenv("SESSION_STRING_ONE", "").strip()
-    if session_one:
-        try:
-            telethon_client_one = TelegramClient(StringSession(session_one), TELEGRAM_API_ID, TELEGRAM_API_HASH)
-            await telethon_client_one.start()
-            asyncio.create_task(auto_claimer_loop(telethon_client_one, "Account-1"))
-        except Exception as e:
-            print(f"[!] Failed Account-1: {e}")
-
-    print("[+] Cloud Bot, Mining Radar & OpenAI Web Studio running.")
-    while True:
-        await asyncio.sleep(3600)
-
 if __name__ == "__main__":
-    asyncio.run(main())
+    port = int(os.getenv("PORT", 10000))
+    uvicorn.run("cloud_bot:api_app", host="0.0.0.0", port=port)
