@@ -4,7 +4,6 @@ import uuid
 import time
 import asyncio
 from contextlib import asynccontextmanager
-from urllib.parse import urlparse
 
 from dotenv import load_dotenv
 import requests
@@ -16,11 +15,9 @@ from telegram.request import HTTPXRequest
 from telethon import TelegramClient
 from telethon.sessions import StringSession
 
-# --- FASTAPI BACKEND IMPORTS ---
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException
 from fastapi.responses import HTMLResponse, FileResponse, JSONResponse
 import uvicorn
-# -------------------------------
 
 load_dotenv()
 
@@ -36,15 +33,12 @@ MINING_BOTS_RAW = os.getenv("MINING_BOT_USERNAME", "@UltrawalletTrade_Bot,@ATF_A
 MINING_BOT_USERNAMES = [b.strip() for b in MINING_BOTS_RAW.split(",") if b.strip()]
 
 STATUS_COMMAND = "/claim"
-# --------------------------------------
-
 MINING_STATUS_STORE = {}
 
 # --- WEB & MINI-APP STUDIO STATE ---
 GENERATED_SITES_DIR = "generated_sites"
 os.makedirs(GENERATED_SITES_DIR, exist_ok=True)
-USER_WEB_PROJECTS = {}  # {user_id: {"site_id": str, "html": str, "active": bool}}
-# -----------------------------------
+USER_WEB_PROJECTS = {}
 
 DYNAMIC_CONFIG = {
     "polling_interval": 900,
@@ -65,8 +59,7 @@ TICKER_MAP = {
 def build_webapp_from_template(prompt: str) -> str:
     prompt_lower = prompt.lower()
     
-    # Check if user wants an e-commerce or shop layout
-    if "shop" in prompt_lower or "store" in prompt_lower or "ecommerce" in prompt_lower or "e-commerce" in prompt_lower:
+    if any(k in prompt_lower for k in ["shop", "store", "ecommerce", "e-commerce"]):
         title = "E-Commerce Store"
         description = "Instant Telegram Shop Catalog"
         extra_html = """
@@ -84,7 +77,6 @@ def build_webapp_from_template(prompt: str) -> str:
         </div>
         """
     else:
-        # Default Crypto / Dashboard Layout
         parts = [p.strip() for p in prompt.split("|")]
         title = parts[0] if len(parts) > 0 and parts[0] else "Telegram Mini-App"
         description = parts[1] if len(parts) > 1 and parts[1] else "Custom built via template engine."
@@ -98,8 +90,7 @@ def build_webapp_from_template(prompt: str) -> str:
         </div>
         """
 
-    # Build final HTML template dynamically
-    html_content = f"""<!DOCTYPE html>
+    return f"""<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
@@ -127,7 +118,6 @@ def build_webapp_from_template(prompt: str) -> str:
 </body>
 </html>
 """
-    return html_content
 
 def fetch_pair_price(symbol: str, asset_type: str = "crypto") -> float | None:
     symbol_clean = symbol.lower().strip()
@@ -145,5 +135,235 @@ def fetch_pair_price(symbol: str, asset_type: str = "crypto") -> float | None:
 async def auto_claimer_loop(telethon_client, account_label="Account-1"):
     print(f"[+] Autonomous Mini-App Radar started for [{account_label}]")
     await asyncio.sleep(10)
-     
-    last_known
+    last_known_state = {}
+
+    while True:
+        current_bots = DYNAMIC_CONFIG.get("active_bots", MINING_BOT_USERNAMES)
+        for bot_username in current_bots:
+            try:
+                bot_entity = await telethon_client.get_entity(bot_username)
+                await telethon_client.send_message(bot_entity, STATUS_COMMAND)
+                await asyncio.sleep(6)
+
+                messages = await telethon_client.get_messages(bot_entity, limit=2)
+                for latest_msg in messages:
+                    if not latest_msg.message:
+                        continue
+
+                    message_text = latest_msg.message.lower()
+                    is_ready = any(k in message_text for k in ["ready", "complete", "harvest", "claim available", "limit reached", "balance: 0"])
+
+                    if any(w in message_text for w in ["remaining", "hrs", "mins", "sec"]):
+                        is_ready = False
+
+                    if account_label not in MINING_STATUS_STORE:
+                        MINING_STATUS_STORE[account_label] = {}
+                    MINING_STATUS_STORE[account_label][bot_username] = {
+                        "status": "READY TO CLAIM" if is_ready else "MINING IN PROGRESS",
+                        "last_response": latest_msg.message,
+                        "timestamp": time.time()
+                    }
+
+                    if is_ready:
+                        if last_known_state.get(bot_username) != "ready":
+                            alert_msg = (
+                                f"🚨 **MINING REWARD READY! [{account_label}]** 🚨\n\n"
+                                f"🤖 **Mini-App Bot:** `{bot_username}`\n"
+                                f"⚡ Cycle complete! Tap below to open the Mini-App and claim."
+                            )
+                            keyboard = [[InlineKeyboardButton("🎯 OPEN MINI-APP", url=f"https://t.me/{bot_username.lstrip('@')}")]]
+                            reply_markup = InlineKeyboardMarkup(keyboard)
+
+                            me = await telethon_client.get_me()
+                            await telethon_client.send_message(me, alert_msg, reply_markup=reply_markup)
+                            last_known_state[bot_username] = "ready"
+                    else:
+                        last_known_state[bot_username] = "active"
+                    break
+
+                await asyncio.sleep(5)
+            except Exception as e:
+                print(f"[-] [{account_label}] Error checking {bot_username}: {e}")
+
+        poll_interval = DYNAMIC_CONFIG.get("polling_interval", 900)
+        await asyncio.sleep(poll_interval)
+
+# --- FASTAPI LIFESPAN & APP DEFINITION ---
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    global tg_app_global, telethon_client_one
+
+    if TELEGRAM_TOKEN:
+        tg_app_global = ApplicationBuilder().token(TELEGRAM_TOKEN).request(HTTPXRequest(connect_timeout=30.0, read_timeout=30.0)).build()
+
+        handlers = {
+            "help": tg_help,
+            "build": tg_build,
+            "done": tg_done,
+            "crypto": tg_crypto,
+        }
+        for name, handler in handlers.items():
+            tg_app_global.add_handler(CommandHandler([name, name.upper()], handler))
+
+        tg_app_global.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, tg_studio_message_handler))
+
+        await tg_app_global.initialize()
+        await tg_app_global.start()
+
+        tg_menu = [
+            BotCommand("build", "Create & Host Mini-App"),
+            BotCommand("done", "Exit Edit Mode"),
+            BotCommand("crypto", "Crypto Price Lookup"),
+            BotCommand("help", "Show Commands")
+        ]
+        await tg_app_global.bot.set_my_commands(tg_menu)
+        await tg_app_global.updater.start_polling(drop_pending_updates=True)
+
+    session_one = os.getenv("SESSION_STRING_ONE", "").strip()
+    if session_one:
+        try:
+            telethon_client_one = TelegramClient(StringSession(session_one), TELEGRAM_API_ID, TELEGRAM_API_HASH)
+            await telethon_client_one.start()
+            asyncio.create_task(auto_claimer_loop(telethon_client_one, "Account-1"))
+        except Exception as e:
+            print(f"[!] Failed Account-1: {e}")
+
+    print("[+] Cloud Bot & Template Engine successfully started.")
+    yield
+
+    if tg_app_global:
+        await tg_app_global.updater.stop()
+        await tg_app_global.stop()
+        await tg_app_global.shutdown()
+
+# THIS IS THE ATTRIBUTE UVICORN LOOKS FOR: cloud_bot:api_app
+api_app = FastAPI(title="Cloud Bot & Template Engine API", lifespan=lifespan)
+
+@api_app.get("/", response_class=JSONResponse)
+def root():
+    return {"status": "online", "service": "Master Cloud Bot & Template Engine Active"}
+
+@api_app.get("/apps/{site_id}", response_class=HTMLResponse)
+async def serve_generated_app(site_id: str):
+    safe_id = re.sub(r"[^a-zA-Z0-9_-]", "", site_id)
+    file_path = os.path.join(GENERATED_SITES_DIR, f"{safe_id}.html")
+    if os.path.exists(file_path):
+        return FileResponse(file_path, media_type="text/html")
+    raise HTTPException(status_code=404, detail="Generated Web App not found or expired.")
+
+@api_app.get("/api/mining-status")
+async def get_mining_status():
+    return {"status": "online", "accounts": MINING_STATUS_STORE}
+
+# --- TELEGRAM COMMAND HANDLERS ---
+async def tg_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if ALLOWED_USERS and str(update.effective_user.id) not in ALLOWED_USERS:
+        return
+    help_text = (
+        "🤖 **Cloud Bot & Template Engine**\n\n"
+        "🌐 `/build Title | Description` — Instant template deployment\n"
+        "✅ `/done` — Exit Studio Edit Mode\n"
+        "💵 `/crypto <ticker>` — Crypto Spot Price\n"
+        "ℹ️ `/help` — Show commands"
+    )
+    await update.message.reply_text(help_text, parse_mode="Markdown")
+
+async def tg_build(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if ALLOWED_USERS and str(update.effective_user.id) not in ALLOWED_USERS:
+        return
+    prompt = " ".join(context.args).strip()
+    if not prompt:
+        await update.message.reply_text(
+            "💡 **Usage:** `/build Title | Description`\n"
+            "Example: `/build E-commerce store | Cyberpunk shop catalog`",
+            parse_mode="Markdown"
+        )
+        return
+
+    user_id = update.effective_user.id
+    status_msg = await update.message.reply_text("⚡ Generating and hosting your Mini-App...", parse_mode="Markdown")
+
+    try:
+        html_code = build_webapp_from_template(prompt)
+        site_id = f"app_{uuid.uuid4().hex[:8]}"
+        file_path = os.path.join(GENERATED_SITES_DIR, f"{site_id}.html")
+
+        with open(file_path, "w", encoding="utf-8") as f:
+            f.write(html_code)
+
+        USER_WEB_PROJECTS[user_id] = {
+            "site_id": site_id,
+            "html": html_code,
+            "active": True
+        }
+
+        base_url = os.getenv("RENDER_EXTERNAL_URL", "https://your-app-name.onrender.com").rstrip("/")
+        live_url = f"{base_url}/apps/{site_id}"
+
+        keyboard = [
+            [InlineKeyboardButton("🚀 Open Live Mini-App", web_app={"url": live_url})],
+            [InlineKeyboardButton("🌐 Open in External Browser", url=live_url)]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+
+        await status_msg.edit_text(
+            f"✅ **Mini-App Deployed Instantly!**\n\n"
+            f"🔗 **Live URL:** `{live_url}`\n\n"
+            f"🎨 **Studio Mode Active:** Send text edits to update, or `/done` to finish.",
+            reply_markup=reply_markup,
+            parse_mode="Markdown"
+        )
+    except Exception as e:
+        await status_msg.edit_text(f"❌ Build failed: {str(e)}")
+
+async def tg_done(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if ALLOWED_USERS and str(update.effective_user.id) not in ALLOWED_USERS:
+        return
+    user_id = update.effective_user.id
+    if user_id in USER_WEB_PROJECTS and USER_WEB_PROJECTS[user_id].get("active"):
+        USER_WEB_PROJECTS[user_id]["active"] = False
+        await update.message.reply_text("✅ **Studio session closed.** Your app remains live at its link.", parse_mode="Markdown")
+    else:
+        await update.message.reply_text("ℹ️ No active Studio session running.")
+
+async def tg_studio_message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.message or not update.message.text:
+        return
+    if ALLOWED_USERS and str(update.effective_user.id) not in ALLOWED_USERS:
+        return
+
+    user_id = update.effective_user.id
+    project = USER_WEB_PROJECTS.get(user_id)
+    if not project or not project.get("active"):
+        return
+
+    edit_prompt = update.message.text.strip()
+    try:
+        updated_html = build_webapp_from_template(edit_prompt)
+        site_id = project["site_id"]
+        file_path = os.path.join(GENERATED_SITES_DIR, f"{site_id}.html")
+
+        with open(file_path, "w", encoding="utf-8") as f:
+            f.write(updated_html)
+
+        project["html"] = updated_html
+        base_url = os.getenv("RENDER_EXTERNAL_URL", "https://your-app-name.onrender.com").rstrip("/")
+        live_url = f"{base_url}/apps/{site_id}"
+
+        await update.message.reply_text(f"✨ **App Updated!** Live at: `{live_url}`", parse_mode="Markdown")
+    except Exception as e:
+        await update.message.reply_text(f"❌ Update failed: {str(e)}")
+
+async def tg_crypto(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if ALLOWED_USERS and str(update.effective_user.id) not in ALLOWED_USERS:
+        return
+    symbol = context.args[0] if context.args else "bitcoin"
+    price = fetch_pair_price(symbol, "crypto")
+    if price:
+        await update.message.reply_text(f"💵 **{symbol.upper()}:** ${price:,.4f}", parse_mode="Markdown")
+    else:
+        await update.message.reply_text("❌ Ticker not found.")
+
+if __name__ == "__main__":
+    port = int(os.getenv("PORT", 10000))
+    uvicorn.run("cloud_bot:api_app", host="0.0.0.0", port=port)
