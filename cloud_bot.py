@@ -107,7 +107,6 @@ async def scan_account_bots(telethon_client, account_label="Account-1"):
                 
                 message_text = latest_msg.message.lower()
                 
-                # Check custom keywords
                 ready_keywords = DYNAMIC_CONFIG.get("ready_keywords", ["ready", "complete", "harvest", "claim available", "limit reached", "balance: 0"])
                 not_ready_keywords = DYNAMIC_CONFIG.get("not_ready_keywords", ["remaining", "hrs", "mins", "sec"])
                 
@@ -157,11 +156,9 @@ async def auto_claimer_loop(telethon_client, account_label="Account-1"):
         poll_interval = DYNAMIC_CONFIG.get("polling_interval", 900)
         await asyncio.sleep(poll_interval)
 
-# --- AUTH VERIFICATION HELPER ---
 def verify_dashboard_access(x_api_key: str = Header(None), x_telegram_init_data: str = Header(None)):
     if x_api_key and x_api_key == DASHBOARD_API_KEY:
         return True
-    # If using Telegram web app init data or if allowed users check passes, allow
     if x_telegram_init_data or not DASHBOARD_API_KEY:
         return True
     raise HTTPException(status_code=401, detail="Unauthorized dashboard access")
@@ -282,7 +279,6 @@ async def mark_claimed(request: Request, x_api_key: str = Header(None), x_telegr
 @api_app.post("/api/create-invoice")
 async def create_invoice(x_api_key: str = Header(None), x_telegram_init_data: str = Header(None)):
     verify_dashboard_access(x_api_key, x_telegram_init_data)
-    # Placeholder invoice link for Telegram Stars or external payment
     return {"status": "success", "invoice_link": "https://t.me/share/url?url=ProPassSubscription"}
 
 # --- TELEGRAM COMMAND HANDLERS ---
